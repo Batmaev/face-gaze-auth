@@ -14,4 +14,4 @@ RUN echo 'from deepface import DeepFace; from deepface.modules.modeling import b
 
 COPY . .
 
-CMD ["uv", "run", "fastapi", "run", "app.py"]
+CMD ["uv", "run", "fastapi", "run", "main.py"]
