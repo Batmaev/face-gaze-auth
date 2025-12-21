@@ -1,0 +1,7 @@
+http://localhost {
+  reverse_proxy backend:8000
+}
+
+face.wasya.fun {
+  reverse_proxy backend:8000
+}
