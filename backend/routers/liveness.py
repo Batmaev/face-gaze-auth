@@ -50,6 +50,7 @@ async def generate_stimulus(
 async def check_liveness(
     token: Optional[str] = Body(None, description="Token returned by GET /stim. If not provided (or expired), stim_x, stim_y will be used."),
     user_id: str = Body("anon", description="Trajectories will be saved under this user_id"),
+    quality: Optional[Literal["good", "bad"]] = Body(None, description="User's self-report of their cooperation"),
     stim_x: Optional[List[float]] = Body(None),
     stim_y: Optional[List[float]] = Body(None),
     gaze_x: List[float] = Body(...),
@@ -85,7 +86,11 @@ async def check_liveness(
 
         liveness_dir = DATA_DIR / user_id / "trajectories"
         liveness_dir.mkdir(parents=True, exist_ok=True)
-        df.to_feather(liveness_dir / f"{generate_name_from_time()}.feather")
+        if quality:
+            filename = f"{generate_name_from_time()}-{quality}.feather"
+        else:
+            filename = f"{generate_name_from_time()}.feather"
+        df.to_feather(liveness_dir / filename)
 
         return LivenessResponse(
             is_live=is_live,
