@@ -1,0 +1,5 @@
+[gdrive]
+type = drive
+scope = drive.file
+metadata_owner = off
+token = {"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}

@@ -8,6 +8,24 @@ services:
       - ./backend:/app
     restart: unless-stopped
 
+  gdrive-sync:
+    build: ./rclone
+    volumes:
+      - ./backend/data:/data:ro
+      - ./rclone:/rclone:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "Initial sync..."
+        rclone copy /data gdrive:face-gaze-data --config /rclone/rclone.conf --verbose
+        echo "Watching for changes..."
+        while inotifywait -r -e modify,create,delete,move /data; do
+          echo "[$(date)] Changes detected, syncing..."
+          rclone copy /data gdrive:face-gaze-data --config /rclone/rclone.conf --verbose
+        done
+    restart: unless-stopped
+
   caddy:
     image: caddy:latest
     ports:
