@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./backend/data:/app/data
+      - ./backend:/app
     restart: unless-stopped
 
   caddy:
