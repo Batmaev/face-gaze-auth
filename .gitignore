@@ -5,3 +5,4 @@ __pycache__
 data
 example
 rclone.conf
+logs

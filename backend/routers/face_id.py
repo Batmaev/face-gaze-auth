@@ -7,6 +7,7 @@ from deepface import DeepFace
 
 from models import RegisterResponse, VerifyResponse, AsyncVerifyResponse, VerifyResultResponse
 from utils import DATA_DIR, ASYNC_VERIFY_RESULTS, executor, generate_short_id, generate_name_from_time
+from log_decorator import log_handler
 
 
 router = APIRouter(tags=["Face ID"])
@@ -36,6 +37,7 @@ async def save_auth_photo(image: UploadFile, user_id: str) -> Path:
 
 
 @router.post("/register", response_model=RegisterResponse)
+@log_handler
 async def register(
     image: UploadFile = File(..., description="Face image for registration"),
     name: str = Form("Anonymous", description="User's name, defaults to 'Anonymous'"),
@@ -54,6 +56,7 @@ async def register(
 
 
 @router.post("/verify-image", response_model=VerifyResponse)
+@log_handler
 async def verify(
     image: UploadFile = File(..., description="Face image to verify"),
     user_id: str = Form(..., description="User ID to verify against"),
@@ -85,6 +88,7 @@ async def _process_verification(result_id: str, registration_path: str, auth_pho
 
 
 @router.post("/verify-image-async", response_model=AsyncVerifyResponse)
+@log_handler
 async def verify_async(
     image: UploadFile = File(..., description="Face image to verify"),
     user_id: str = Form(..., description="User ID to verify against"),
@@ -104,6 +108,7 @@ async def verify_async(
 
 
 @router.get("/verify-result/{result_id}", response_model=VerifyResultResponse)
+@log_handler
 async def get_verify_result(result_id: str) -> VerifyResultResponse:
     """Get the result of an async verification request."""
     if result_id not in ASYNC_VERIFY_RESULTS:
@@ -114,6 +119,7 @@ async def get_verify_result(result_id: str) -> VerifyResultResponse:
 
 
 @router.get("/users", response_model=dict[str, str])
+@log_handler
 async def get_users() -> dict[str, str]:
     """Get all registered users."""
     return {

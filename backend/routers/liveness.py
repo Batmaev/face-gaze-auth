@@ -8,12 +8,14 @@ from utils import DATA_DIR, GENERATED_STIMULI, generate_short_id, generate_name_
 from stimulus.generate import fourier_ios_like, random_spline
 from liveness.fit import align_gaze, find_blinks
 from liveness.ml_model import predict
+from log_decorator import log_handler
 
 
 router = APIRouter(tags=["Liveness"])
 
 
 @router.get("/stim")
+@log_handler
 async def generate_stimulus(
     kind: Literal["fourier_ios_like", "random_spline"] = "random_spline",
 ) -> StimulusResponse:
@@ -47,6 +49,7 @@ async def generate_stimulus(
         }
     },
 )
+@log_handler
 async def check_liveness(
     token: Optional[str] = Body(None, description="Token returned by GET /stim. If not provided (or expired), stim_x, stim_y will be used."),
     user_id: str = Body("anon", description="Trajectories will be saved under this user_id"),
