@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+from functools import partial
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from deepface import DeepFace
@@ -56,13 +57,13 @@ async def register(
 async def verify(
     image: UploadFile = File(..., description="Face image to verify"),
     user_id: str = Form(..., description="User ID to verify against"),
-    model_name: str = Form("ArcFace", description="Face recognition model (e.g., ArcFace, VGG-Face, Facenet)"),
+    model_name: str = Form("Facenet512", description="One of: VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, DeepID, Dlib, ArcFace, SFace and GhostFaceNet"),
 ) -> VerifyResponse:
     """Verify a face image against a registered user's face."""
     registration_path = get_registration_photo(user_id)
     auth_photo_path = await save_auth_photo(image, user_id)
     try:
-        return DeepFace.verify(registration_path.as_posix(), auth_photo_path.as_posix(), model_name=model_name)
+        return DeepFace.verify(registration_path.as_posix(), auth_photo_path.as_posix(), model_name=model_name, align=False)
     except ValueError as e:
         which_image = "auth image" if "img2" in str(e) else "registration image"
         raise HTTPException(status_code=400, detail=f"No face detected in {which_image}")
@@ -73,10 +74,7 @@ async def _process_verification(result_id: str, registration_path: str, auth_pho
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             executor,
-            DeepFace.verify,
-            registration_path,
-            auth_photo_path,
-            model_name,
+            partial(DeepFace.verify, registration_path, auth_photo_path, model_name=model_name, align=False),
         )
         ASYNC_VERIFY_RESULTS[result_id] = {"status": "completed", "result": result, "error": None}
     except ValueError as e:
@@ -90,7 +88,7 @@ async def _process_verification(result_id: str, registration_path: str, auth_pho
 async def verify_async(
     image: UploadFile = File(..., description="Face image to verify"),
     user_id: str = Form(..., description="User ID to verify against"),
-    model_name: str = Form("ArcFace", description="Face recognition model (e.g., ArcFace, VGG-Face, Facenet)"),
+    model_name: str = Form("Facenet512", description="One of: VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, DeepID, Dlib, ArcFace, SFace and GhostFaceNet"),
 ) -> AsyncVerifyResponse:
     """Start async face verification. Returns a result_id to retrieve the result later."""
     registration_path = get_registration_photo(user_id)
