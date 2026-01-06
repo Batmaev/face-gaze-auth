@@ -75,6 +75,11 @@ async def check_liveness(
             'gaze_y': gaze_y[:min_len],
         })
 
+        if left_eye_blink:
+            df['left_eye_blink'] = left_eye_blink[:min_len]
+        if right_eye_blink:
+            df['right_eye_blink'] = right_eye_blink[:min_len]
+
         USE_BLINKS = left_eye_blink is not None and right_eye_blink is not None
         if USE_BLINKS:
             df['blink'] = find_blinks(left_eye_blink, right_eye_blink)
