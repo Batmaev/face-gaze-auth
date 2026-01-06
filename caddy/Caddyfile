@@ -1,7 +1,15 @@
 http://localhost {
+  encode {
+    zstd fastest
+    gzip
+  }
   reverse_proxy backend:8000
 }
 
 face.wasya.fun {
+  encode {
+    zstd fastest
+    gzip
+  }
   reverse_proxy backend:8000
 }
