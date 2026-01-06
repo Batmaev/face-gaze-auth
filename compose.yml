@@ -4,8 +4,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     volumes:
-      - ./backend/data:/app/data
       - ./backend:/app
+      - backend_venv:/app/.venv
+    tmpfs:
+      - /app/__pycache__
+      - /app/routers/__pycache__
+      - /app/liveness/__pycache__
+      - /app/stimulus/__pycache__
     restart: unless-stopped
 
   gdrive-sync:
@@ -41,3 +46,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  backend_venv:
