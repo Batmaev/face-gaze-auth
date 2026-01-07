@@ -1,6 +1,6 @@
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
 import pandas as pd
 
 from models import StimulusResponse, LivenessResponse, LIVENESS_EXAMPLE
@@ -111,4 +111,27 @@ async def check_liveness(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+
+
+@router.post("/csv")
+@log_handler
+async def upload_csv(
+    user_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a CSV file for the given user."""
+    csv_dir = DATA_DIR / user_id / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = ".csv"
+    if file.filename and "." in file.filename:
+        ext = "." + file.filename.rsplit(".", 1)[1]
+
+    filename = f"{generate_name_from_time()}{ext}"
+    filepath = csv_dir / filename
+
+    content = await file.read()
+    filepath.write_bytes(content)
+
+    return {"message": "File uploaded successfully", "path": str(filepath)}
 
