@@ -87,7 +87,7 @@ async def check_liveness(
         if USE_BLINKS:
             df['blink'] = find_blinks(left_eye_blink, right_eye_blink)
 
-        align_gaze(df, kind='independent', threshold=100.0, n_iterations=1, drop_blinks=USE_BLINKS)
+        align_gaze(df, kind='independent', threshold=100.0, n_iterations=5, drop_blinks=USE_BLINKS)
 
         score, is_live = predict(df, USE_BLINKS)
         lag = df.lag.iloc[0]
