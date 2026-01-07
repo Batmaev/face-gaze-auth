@@ -1,6 +1,7 @@
 from pathlib import Path
 import asyncio
 from functools import partial
+import math
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from deepface import DeepFace
@@ -121,9 +122,21 @@ async def get_verify_result(result_id: str) -> VerifyResultResponse:
 @router.get("/users", response_model=dict[str, str])
 @log_handler
 async def get_users() -> dict[str, str]:
-    """Get all registered users."""
-    return {
-        d.name: (d / "name.txt").read_text()
-        for d in DATA_DIR.iterdir()
-        if (d / "name.txt").exists()
-    }
+    """Get all registered users in descending order of last authentication time."""
+
+    id_name_last_time = []
+    for d in DATA_DIR.iterdir():
+        if (d / "name.txt").exists():
+            user_id = d.name
+            name = (d / "name.txt").read_text()
+            last_time = (d / 'auth_attempts').stat().st_mtime if (d / 'auth_attempts').exists() else math.inf
+
+            id_name_last_time.append({
+                "user_id": user_id,
+                "name": name,
+                "last_time": last_time,
+            })
+
+    id_name_last_time.sort(key=lambda x: x['last_time'], reverse=True)
+
+    return {user['user_id']: user['name'] for user in id_name_last_time}
