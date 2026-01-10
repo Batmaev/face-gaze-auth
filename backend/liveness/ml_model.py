@@ -6,7 +6,7 @@ import pandas as pd
 model_path = Path(__file__).parent / 'linear_model.joblib'
 linear_model = joblib.load(model_path)
 
-THRESHOLD = 0.1
+THRESHOLD = 0.75
 
 def get_fit_dists(df):
     return pd.Series(np.sqrt((df.gaze_fit_x - df.stim_shift_x)**2 + (df.gaze_fit_y - df.stim_shift_y)**2)).dropna()

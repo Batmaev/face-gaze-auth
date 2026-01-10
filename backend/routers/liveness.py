@@ -23,7 +23,7 @@ async def generate_stimulus(
     Generated (x, y) are guaranteed to be in [0, 1]×[0, 1].
     """
 
-    N_CTRL_POINTS = 7
+    N_CTRL_POINTS = 6
 
     DURATION_SEC = 5
 
