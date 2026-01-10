@@ -107,7 +107,8 @@ class VerifyResultResponse(BaseModel):
 
 class StimulusResponse(BaseModel):
     type: Literal["moving-dot"] = Field("moving-dot", description="Type of stimulus")
-    fps: int = Field(60, description="The stimulus should be displayed at this fps")
+    fps: int = Field(60, description="Frames per second")
+    duration_sec: int = Field(5, description="Duration in seconds")
     token: str = Field(..., description="Stimulus will be saved on the server for 3 minutes with this token")
     x: List[float]
     y: List[float]

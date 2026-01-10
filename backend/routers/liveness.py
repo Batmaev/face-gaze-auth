@@ -23,15 +23,22 @@ async def generate_stimulus(
     Generated (x, y) are guaranteed to be in [0, 1]×[0, 1].
     """
 
+    N_CTRL_POINTS = 7
+
+    DURATION_SEC = 5
+
+    FPS = 60
+    N_POINTS = DURATION_SEC * FPS
+
     if kind == "fourier_ios_like":
-        stim_x, stim_y = fourier_ios_like()
+        stim_x, stim_y = fourier_ios_like(N_POINTS)
     elif kind == "random_spline":
-        stim_x, stim_y = random_spline()
+        stim_x, stim_y = random_spline(N_POINTS, N_CTRL_POINTS)
 
     token = generate_short_id()
     GENERATED_STIMULI[token] = (stim_x, stim_y)
 
-    return StimulusResponse(type="moving-dot", x=stim_x, y=stim_y, fps=60, token=token)
+    return StimulusResponse(type="moving-dot", x=stim_x, y=stim_y, fps=FPS, duration_sec=DURATION_SEC, token=token)
 
 
 @router.post(
