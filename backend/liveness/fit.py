@@ -87,7 +87,7 @@ def find_blinks(left_eye_blink, right_eye_blink, threshold=0.8, left_pad=5, righ
     for i in range(len(raw_blinks)):
         if raw_blinks[i]:
             for j in range(max(0, i - left_pad), min(len(raw_blinks), i + right_pad)):
-                blinks[j] = True    
+                blinks[j] = True
     return blinks
 
 

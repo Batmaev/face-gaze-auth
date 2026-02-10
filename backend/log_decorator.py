@@ -49,7 +49,6 @@ def _extract_request_info(request: Request | None) -> dict | None:
     if request is None:
         return None
     return {
-        "client_ip": request.client.host if request.client else "unknown",
         "method": request.method,
         "url": str(request.url),
         "path": request.url.path,
