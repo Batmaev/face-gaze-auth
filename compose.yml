@@ -6,6 +6,7 @@ services:
     volumes:
       - ./backend:/app
       - backend_venv:/app/.venv
+      - deepface_weights:/root/.deepface
     tmpfs:
       - /app/__pycache__
       - /app/routers/__pycache__
@@ -47,3 +48,4 @@ volumes:
   caddy_data:
   caddy_config:
   backend_venv:
+  deepface_weights:
