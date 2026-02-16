@@ -3,7 +3,7 @@ from sklearn.linear_model import RANSACRegressor
 import numpy as np
 
 
-def align_gaze(df, kind: Literal['independent'] = 'independent', threshold=100.0, n_iterations=5, drop_blinks=True):
+def align_gaze(df, kind: Literal['independent'] = 'independent', threshold=100.0, n_iterations=5, drop_blinks=True, initial_lag_guess=6, min_lag=0, max_lag=60, corr_kind: Literal['pearson', 'kendall', 'spearman'] = 'spearman'):
     """
     Подбираем пространственное преобразование (калибровку) и сдвиг во времени, чтобы траектории взгляда и стимула максимально совпали.
 
@@ -22,7 +22,7 @@ def align_gaze(df, kind: Literal['independent'] = 'independent', threshold=100.0
 
     Алгоритм:
 
-    1. Делаем догадку о лаге (24 кадра), затем находим выбросы с помощью RANSAC из sklearn (или похожего алгоритма, см. `kind`)
+    1. Делаем догадку о лаге (6 кадров = 100 ms), затем находим выбросы с помощью RANSAC из sklearn (или похожего алгоритма, см. `kind`)
     2. Зная выбросы, перебираем лаги и находим тот, при котором корреляция максимальна
     3. Зная лаг, находим более правильный список выбросов
     3. Повторяем `n_iterations` раз
@@ -40,11 +40,11 @@ def align_gaze(df, kind: Literal['independent'] = 'independent', threshold=100.0
         raise ValueError(f"Invalid kind: {kind}")
 
     # initial guess for lag => find outliers
-    inlier_mask = ransac(df, lag=24, threshold=threshold, drop_blinks=drop_blinks)
+    inlier_mask = ransac(df, lag=initial_lag_guess, threshold=threshold, drop_blinks=drop_blinks)
 
     for _ in range(n_iterations):
         # get true lag based on inliers
-        lag, max_corr = get_lag(df, inlier_mask)
+        lag, max_corr = get_lag(df, inlier_mask, min_lag=min_lag, max_lag=max_lag, corr_kind=corr_kind)
 
         # get better scale fit
         inlier_mask = ransac(df, lag, threshold=threshold, drop_blinks=drop_blinks)
@@ -58,22 +58,22 @@ def align_gaze(df, kind: Literal['independent'] = 'independent', threshold=100.0
 
 
 
-def calculate_corrs(df, gaze_col='gaze_x', video_col='video_x', max_lag=100, min_lag=0):
+def calculate_corrs(df, gaze_col='gaze_x', stim_col='stim_x', min_lag=0, max_lag=60, corr_kind: Literal['pearson', 'kendall', 'spearman'] = 'kendall'):
     s1 = df[gaze_col]
-    s2 = df[video_col]
+    s2 = df[stim_col]
 
     lags = np.arange(min_lag, max_lag+1)
 
-    corrs = [s1.corr(s2.shift(lag)) for lag in lags]
+    corrs = [s1.corr(s2.shift(lag), method=corr_kind) for lag in lags]
     return lags, np.array(corrs)
 
 
-def get_lag(df, valid_mask):
+def get_lag(df, valid_mask, min_lag=0, max_lag=60, corr_kind: Literal['pearson', 'kendall', 'spearman'] = 'spearman'):
     df = df.copy()
     df.loc[~valid_mask, ['gaze_x', 'gaze_y']] = np.nan
 
-    lags, corrs_x = calculate_corrs(df, gaze_col='gaze_x', video_col='stim_x')
-    lags, corrs_y = calculate_corrs(df, gaze_col='gaze_y', video_col='stim_y')
+    lags, corrs_x = calculate_corrs(df, gaze_col='gaze_x', stim_col='stim_x', min_lag=min_lag, max_lag=max_lag, corr_kind=corr_kind)
+    lags, corrs_y = calculate_corrs(df, gaze_col='gaze_y', stim_col='stim_y', min_lag=min_lag, max_lag=max_lag, corr_kind=corr_kind)
 
     corrs = (corrs_x + corrs_y) / 2
 
@@ -91,7 +91,7 @@ def find_blinks(left_eye_blink, right_eye_blink, threshold=0.8, left_pad=5, righ
     return blinks
 
 
-def ransac_independent(df, lag, threshold=100.0, drop_blinks=False):
+def ransac_independent(df, lag, threshold=100.0, drop_blinks=True):
     df[['stim_shift_x', 'stim_shift_y']] = df[['stim_x', 'stim_y']].shift(lag)
     Xx = df[['gaze_x']].values
     Xy = df[['gaze_y']].values
