@@ -13,5 +13,8 @@ services:
       - /app/stimulus/__pycache__
     restart: unless-stopped
 
+    ports: # or add https in front
+      - 8000:8000
+
 volumes:
   backend_venv:
