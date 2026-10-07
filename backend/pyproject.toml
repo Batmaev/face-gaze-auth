@@ -5,13 +5,11 @@ requires-python = "==3.13.*"
 dependencies = [
     "aiofiles>=25.1.0",
     "cachetools>=6.2.4",
-    "deepface>=0.0.96",
     "fastapi[standard]>=0.125.0",
-    "pyarrow>=22.0.0",
+    "pandas>=3.0.6",
     "python-multipart>=0.0.21",
-    "scikit-learn>=1.8.0",
+    "scikit-learn~=1.6.1",
     "scipy>=1.16.3",
-    "tf-keras>=2.20.1",
 ]
 
 [dependency-groups]

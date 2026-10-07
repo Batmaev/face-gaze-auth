@@ -16,9 +16,9 @@ def get_corr0(df, method='spearman'):
     corr_y = df.stim_y.corr(df.gaze_y, method=method)
     return (corr_x + corr_y) / 2
 
-def predict(df, drop_blinks):
-    if drop_blinks:
-        df = df[~df.blink].reset_index(drop=True)
+def predict(df):
+
+    df = df[~df.blink].reset_index(drop=True)
 
     fit_dists = get_fit_dists(df)
 
@@ -30,5 +30,5 @@ def predict(df, drop_blinks):
         # 'scale': [df.k_x[0] * df.k_y[0]]
     })
 
-    proba = linear_model.predict_proba(features)[:, 1]
+    proba = linear_model.predict_proba(features)[0, 1]
     return proba, proba > THRESHOLD
