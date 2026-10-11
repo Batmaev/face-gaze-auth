@@ -43,7 +43,9 @@ async def get_users() -> dict[str, str]:
         if (d / "name.txt").exists():
             user_id = d.name
             name = (d / "name.txt").read_text()
-            last_time = (d / 'auth_attempts').stat().st_mtime if (d / 'auth_attempts').exists() else math.inf
+            last_video_time = (d / 'video').stat().st_mtime if (d / 'video').exists() else math.inf
+            last_csv_time = (d / 'csv').stat().st_mtime if (d / 'csv').exists() else math.inf
+            last_time = max(last_video_time, last_csv_time)
 
             id_name_last_time.append({
                 "user_id": user_id,

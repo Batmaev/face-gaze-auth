@@ -3,8 +3,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    environment:
+      HF_HOME: /cache/huggingface
     volumes:
       - ./backend:/app
+      - huggingface_cache:/cache/huggingface
     tmpfs:
       - /app/__pycache__
       - /app/routers/__pycache__
@@ -12,5 +15,11 @@ services:
       - /app/stimulus/__pycache__
     restart: unless-stopped
 
-    ports: # or add https in front
-      - 8000:8000
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+volumes:
+  huggingface_cache:

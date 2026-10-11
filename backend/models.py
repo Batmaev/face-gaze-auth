@@ -1,8 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field
 
-from liveness.example_values import ExampleValues
-
 
 # --- Registration Models ---
 
@@ -33,19 +31,9 @@ class LivenessResponse(BaseModel):
     gaze_fit_x: list[float]
     gaze_fit_y: list[float]
     inlier: list[bool]
+    fps: float = Field(..., description="Frame rate of gaze_fit_x, gaze_fit_y and inlier", example=15)
     lag: int = Field(
         ..., 
         description="Estimated lag between stimulus and gaze in frames",
         example=10
     )
-
-
-LIVENESS_EXAMPLE = {
-    "stim_x": ExampleValues.stim_x,
-    "stim_y": ExampleValues.stim_y,
-    "gaze_x": ExampleValues.gaze_x,
-    "gaze_y": ExampleValues.gaze_y,
-    "left_eye_blink": ExampleValues.left_eye_blink,
-    "right_eye_blink": ExampleValues.right_eye_blink,
-}
-

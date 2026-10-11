@@ -2,7 +2,7 @@ from sklearn.linear_model import RANSACRegressor
 import numpy as np
 
 
-def align_gaze(df, threshold=100.0, n_iterations=5, initial_lag_guess=6, min_lag=0, max_lag=60):
+def align_gaze(df, threshold=0.15, n_iterations=5, initial_lag_guess=6, min_lag=-12, max_lag=12):
     """
     Подбираем пространственное преобразование (калибровку) и сдвиг во времени, чтобы траектории взгляда и стимула максимально совпали.
 
