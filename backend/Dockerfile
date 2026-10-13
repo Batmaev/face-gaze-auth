@@ -14,9 +14,11 @@ ARG TORCH=cpu
 
 RUN uv sync --no-dev --extra "$TORCH"
 
-# Колесо webeyetrack на PyPI собрано без model_weights; берём модель из репозитория
-ADD --chmod=644 https://raw.githubusercontent.com/RedForestAI/WebEyeTrack/75fbd2f5f784f2eb3a39675a8dcbf1b01c697f1c/python/webeyetrack/model_weights/face_landmarker_v2_with_blendshapes.task \
-    /opt/venv/lib/python3.13/site-packages/webeyetrack/model_weights/
+ENV FACE_LANDMARKER_MODEL=/opt/models/face_landmarker.task
+ADD --chmod=644 \
+    --checksum=sha256:64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff \
+    https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
+    "$FACE_LANDMARKER_MODEL"
 
 # Иначе нет сертификатов для Hugging Face
 # libxcb1/libgl1/libglib2.0-0: GUI-сборка OpenCV (тянется через mediapipe)

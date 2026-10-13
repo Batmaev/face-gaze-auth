@@ -20,6 +20,7 @@
 Переменные окружения бекенда:
 - `TORCH_DEVICE` — устройство для UniGaze, по умолчанию `cuda`, если доступна, иначе `cpu`;
 - `UNIGAZE_FP16=0` — отключить fp16 на CUDA;
-- `MEDIAPIPE_DELEGATE` — `cpu` или `gpu`, по умолчанию `gpu` на macOS и `cpu` в остальных случаях.
+- `MEDIAPIPE_DELEGATE` — `cpu` или `gpu`, по умолчанию `gpu` на macOS и `cpu` в остальных случаях;
+- `FACE_LANDMARKER_MODEL` — путь к `face_landmarker.task`. В Docker модель уже в образе, без Docker она скачивается в `~/.cache/unified-liveness` при первом запуске.
 
 Замеры: `bench_gaze.py` (пайплайн по видео) и `bench_api.py` (нагрузка на `/islive_video`).

@@ -16,7 +16,6 @@ dependencies = [
     "torch",
     "torchvision",
     "unigaze>=0.1.3",
-    "webeyetrack>=0.0.1",
 ]
 
 # Сборка torch выбирается extra: `uv sync --extra cpu` или `uv sync --extra gpu`.

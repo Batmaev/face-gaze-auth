@@ -6,13 +6,13 @@ UniGaze отдаёт направление. Точка — пересечени
 
 from __future__ import annotations
 
-import importlib.util
+import hashlib
 import os
 import sys
 import threading
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import cv2
 import numpy as np
@@ -22,7 +22,6 @@ if str(_HELPERS) not in sys.path:
     sys.path.insert(0, str(_HELPERS))
 
 from geometry import (
-    FACE_POINT_INDICES,
     IMAGENET_MEAN,
     IMAGENET_STD,
     camera_plane_hit,
@@ -36,16 +35,19 @@ from geometry import (
     normalize_face,
 )
 
-_DETECT_SCALE = 0.5
-
 # Те же шесть точек 3D-модели в сетке MediaPipe: уголки глаз и крылья носа.
 _MP_POINTS = (33, 133, 362, 263, 98, 327)
 _MP_LEFT_EAR = (362, 385, 387, 263, 373, 380)
 _MP_RIGHT_EAR = (133, 158, 160, 33, 144, 153)
 
-LandmarksBackend = Literal["mediapipe", "face_alignment"]
+_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+)
+_MODEL_SHA256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
 
 _PREDICT_LOCK = threading.Lock()
+_MODEL_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -89,21 +91,17 @@ def unigaze_gaze_from_video(
     model,
     *,
     batch_size: int = 32,
-    landmarks: LandmarksBackend = "mediapipe",
     target_fps: float | None = None,
 ) -> GazeTrajectory:
     """Посчитать траекторию взгляда для видеофайла.
 
     model — уже загруженный unigaze.load(...). Кадры без лица остаются NaN
-    и не сдвигают остальные точки.
-
-    landmarks — откуда брать точки лица. ``mediapipe`` размечает кадр целиком
-    своей сеткой. ``face_alignment`` — прежний путь: BlazeFace и 68 точек FAN.
+    и не сдвигают остальные точки. Точки лица даёт MediaPipe Face Landmarker.
 
     target_fps — нижняя граница частоты оставленных кадров. Берётся каждый N-й
     кадр, N целое, так что итог не медленнее target_fps. None оставляет все кадры.
     """
-    reader = _make_reader(landmarks)
+    reader = _MediaPipeFaces()
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         raise FileNotFoundError(f"не удалось открыть видео: {video}")
@@ -186,7 +184,7 @@ def _prepare_frame(reader, frame: np.ndarray, timestamp_ms: int):
     if cropped is None:
         return ear, None
     crop, shifted = cropped
-    points = shifted[list(reader.point_indices)]
+    points = shifted[list(_MP_POINTS)]
     camera, distortion = dummy_camera(crop)
     pose = estimate_head_pose(points, camera, distortion)
     if pose is None:
@@ -199,10 +197,6 @@ def _prepare_frame(reader, frame: np.ndarray, timestamp_ms: int):
         return ear, None
     image, rotation, _head_norm = normalized
     return ear, (image, rotation, origin)
-
-
-def _face_area(landmarks: np.ndarray) -> float:
-    return float(np.ptp(landmarks[:, 0]) * np.ptp(landmarks[:, 1]))
 
 
 def _predict(model, images, batch_size: int, device, torch) -> np.ndarray:
@@ -228,17 +222,7 @@ def _use_fp16() -> bool:
     return os.getenv("UNIGAZE_FP16", "1") != "0"
 
 
-def _make_reader(landmarks: LandmarksBackend):
-    if landmarks == "mediapipe":
-        return _MediaPipeFaces()
-    if landmarks == "face_alignment":
-        return _FaceAlignmentFaces()
-    raise ValueError(f"неизвестный источник точек: {landmarks}")
-
-
 class _MediaPipeFaces:
-    point_indices = _MP_POINTS
-
     def __init__(self):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
@@ -287,32 +271,6 @@ class _MediaPipeFaces:
         self._landmarker.close()
 
 
-class _FaceAlignmentFaces:
-    point_indices = FACE_POINT_INDICES
-
-    def __init__(self):
-        self._aligner = _make_aligner()
-
-    def find(self, frame: np.ndarray, timestamp_ms: int):
-        del timestamp_ms
-        small = cv2.resize(
-            frame,
-            dsize=None,
-            fx=_DETECT_SCALE,
-            fy=_DETECT_SCALE,
-            interpolation=cv2.INTER_AREA,
-        )
-        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        preds = self._aligner.get_landmarks(rgb)
-        if not preds:
-            return None
-        landmarks = max(preds, key=_face_area).astype(np.float64) / _DETECT_SCALE
-        return landmarks, eye_aspect_ratio(landmarks)
-
-    def close(self):
-        return None
-
-
 def _mediapipe_delegate() -> str:
     delegate = os.getenv("MEDIAPIPE_DELEGATE") or ("gpu" if sys.platform == "darwin" else "cpu")
     if delegate not in ("cpu", "gpu"):
@@ -321,29 +279,28 @@ def _mediapipe_delegate() -> str:
 
 
 def _mediapipe_model() -> Path:
-    spec = importlib.util.find_spec("webeyetrack")
-    if spec is None or spec.origin is None:
-        raise FileNotFoundError("не найден face_landmarker; нужен пакет webeyetrack")
-    path = Path(spec.origin).parent / "model_weights" / "face_landmarker_v2_with_blendshapes.task"
-    if not path.is_file():
-        raise FileNotFoundError(path)
+    """FACE_LANDMARKER_MODEL, если задан. Иначе модель качается в кеш при первом вызове."""
+    override = os.getenv("FACE_LANDMARKER_MODEL")
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+    cache = Path(os.getenv("XDG_CACHE_HOME") or Path.home() / ".cache")
+    path = cache / "unified-liveness" / "face_landmarker.task"
+    with _MODEL_LOCK:
+        if not path.is_file():
+            _download_model(path)
     return path
 
 
-def _make_aligner():
-    import face_alignment
-
-    try:
-        kind = face_alignment.LandmarksType.TWO_D
-    except AttributeError:
-        kind = face_alignment.LandmarksType._2D
-    # S3FD на полном кадре занимает около секунды. BlazeFace ищет только
-    # прямоугольник, 68 точек по-прежнему считает FAN.
-    return face_alignment.FaceAlignment(
-        kind,
-        flip_input=False,
-        device="cpu",
-        compile=False,
-        face_detector="blazeface",
-        face_detector_kwargs={"back_model": True},
-    )
+def _download_model(path: Path) -> None:
+    with urllib.request.urlopen(_MODEL_URL, timeout=60) as response:
+        payload = response.read()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != _MODEL_SHA256:
+        raise RuntimeError(f"sha256 модели {digest}, ожидался {_MODEL_SHA256}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".part")
+    partial.write_bytes(payload)
+    partial.replace(path)

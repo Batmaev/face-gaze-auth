@@ -24,9 +24,6 @@ FACE_POINTS_3D = np.array(
     dtype=np.float64,
 )
 
-# Те же шесть точек в 68-точечной разметке face_alignment: уголки глаз и крылья носа.
-FACE_POINT_INDICES = (36, 39, 42, 45, 31, 35)
-
 FOCAL_NORM = 960.0
 DISTANCE_NORM = 600.0
 ROI_SIZE = (224, 224)
@@ -141,8 +138,8 @@ def normalize_face(image: np.ndarray, center: np.ndarray, rvec: np.ndarray, came
 
 def eye_aspect_ratio(
     landmarks: np.ndarray,
-    left: tuple[int, ...] = (36, 37, 38, 39, 40, 41),
-    right: tuple[int, ...] = (42, 43, 44, 45, 46, 47),
+    left: tuple[int, ...],
+    right: tuple[int, ...],
 ) -> float:
     """Меньший из двух глаз. Ниже примерно 0.2 глаз закрыт. UniGaze это не считает.
 
