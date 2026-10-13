@@ -1,7 +1,7 @@
 [project]
 name = "unified-liveness"
 version = "0.1.0"
-requires-python = "~=3.13.0"
+requires-python = "~=3.14.0"
 dependencies = [
     "aiofiles>=25.1.0",
     "cachetools>=7.2.1",
@@ -25,6 +25,9 @@ gpu = ["torch", "torchvision"]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+# unigaze фиксирует timm==0.3.2 (2020), а та на Python 3.14+ сыплет
+# предупреждениями про torch.jit.script; с новой timm unigaze тоже работает.
+override-dependencies = ["timm>=1.0.30"]
 
 [tool.uv.sources]
 torch = [
