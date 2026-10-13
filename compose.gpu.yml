@@ -1,0 +1,12 @@
+services:
+  backend:
+    build:
+      args:
+        TORCH: gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

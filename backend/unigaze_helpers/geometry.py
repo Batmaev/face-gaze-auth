@@ -167,16 +167,6 @@ def head_pose_rejected(head_norm: np.ndarray) -> bool:
     return float(np.hypot(pitch, yaw)) > MAX_HEAD_RAD
 
 
-def imagenet_tensor(image_bgr: np.ndarray):
-    import torch
-
-    rgb = image_bgr[:, :, ::-1].astype(np.float32) / 255.0
-    tensor = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1)
-    mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
-    return (tensor - mean) / std
-
-
 def pitchyaw_to_vector(pitchyaw: np.ndarray) -> np.ndarray:
     pitch = float(pitchyaw[0])
     yaw = float(pitchyaw[1])

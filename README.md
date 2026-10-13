@@ -12,3 +12,14 @@
 Запустить: 
 1. Организовать reverse proxy / проброс портов
 2. `docker compose up -d`
+
+С GPU NVIDIA: нужны драйвер не ниже 580 и nvidia-container-toolkit, затем
+`docker compose -f compose.yml -f compose.gpu.yml up -d --build`.
+Без Docker: `uv sync --extra gpu` (или `--extra cpu`).
+
+Переменные окружения бекенда:
+- `TORCH_DEVICE` — устройство для UniGaze, по умолчанию `cuda`, если доступна, иначе `cpu`;
+- `UNIGAZE_FP16=0` — отключить fp16 на CUDA;
+- `MEDIAPIPE_DELEGATE` — `cpu` или `gpu`, по умолчанию `gpu` на macOS и `cpu` в остальных случаях.
+
+Замеры: `bench_gaze.py` (пайплайн по видео) и `bench_api.py` (нагрузка на `/islive_video`).

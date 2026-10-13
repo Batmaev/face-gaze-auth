@@ -7,7 +7,9 @@ UniGaze отдаёт направление. Точка — пересечени
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -21,6 +23,8 @@ if str(_HELPERS) not in sys.path:
 
 from geometry import (
     FACE_POINT_INDICES,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
     camera_plane_hit,
     crop_face,
     dummy_camera,
@@ -29,7 +33,6 @@ from geometry import (
     face_center_camera,
     gaze_in_camera,
     head_pose_rejected,
-    imagenet_tensor,
     normalize_face,
 )
 
@@ -41,6 +44,8 @@ _MP_LEFT_EAR = (362, 385, 387, 263, 373, 380)
 _MP_RIGHT_EAR = (133, 158, 160, 33, 144, 153)
 
 LandmarksBackend = Literal["mediapipe", "face_alignment"]
+
+_PREDICT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,7 @@ def unigaze_gaze_from_video(
     video: str | Path,
     model,
     *,
-    batch_size: int = 4,
+    batch_size: int = 32,
     landmarks: LandmarksBackend = "mediapipe",
     target_fps: float | None = None,
 ) -> GazeTrajectory:
@@ -106,7 +111,7 @@ def unigaze_gaze_from_video(
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     xy_rows: list[np.ndarray] = []
     ear_rows: list[float] = []
-    tensors = []
+    images = []
     samples = []
 
     try:
@@ -138,12 +143,12 @@ def unigaze_gaze_from_video(
                 ear_score, sample = prepared
                 ear_rows[frame_index] = ear_score
                 if sample is not None:
-                    tensor, rotation, origin = sample
-                    tensors.append(tensor)
+                    image, rotation, origin = sample
+                    images.append(image)
                     samples.append((frame_index, rotation, origin))
         progress.close()
 
-        if not tensors:
+        if not images:
             return GazeTrajectory(
                 xy=np.vstack(xy_rows) if xy_rows else np.zeros((0, 2)),
                 ear=np.asarray(ear_rows, dtype=np.float64),
@@ -152,10 +157,13 @@ def unigaze_gaze_from_video(
 
         device = next(model.parameters()).device
         model.eval()
-        pitchyaw = _predict(model, tensors, batch_size, device, torch)
+        # Параллельные вызовы torch на CPU делят одни ядра и тормозят в десятки раз.
+        with _PREDICT_LOCK:
+            pitchyaw = _predict(model, images, batch_size, device, torch)
     finally:
         capture.release()
-        reader.close()
+        # close() у FaceLandmarker иногда ждёт секунду и дольше; GIL он при этом не держит.
+        threading.Thread(target=reader.close, daemon=True).start()
 
     xy = np.vstack(xy_rows)
     for row, (frame_index, rotation, origin) in enumerate(samples):
@@ -190,21 +198,34 @@ def _prepare_frame(reader, frame: np.ndarray, timestamp_ms: int):
     if normalized is None or head_pose_rejected(normalized[2]):
         return ear, None
     image, rotation, _head_norm = normalized
-    return ear, (imagenet_tensor(image), rotation, origin)
+    return ear, (image, rotation, origin)
 
 
 def _face_area(landmarks: np.ndarray) -> float:
     return float(np.ptp(landmarks[:, 0]) * np.ptp(landmarks[:, 1]))
 
 
-def _predict(model, tensors, batch_size: int, device, torch) -> np.ndarray:
+def _predict(model, images, batch_size: int, device, torch) -> np.ndarray:
+    """images — кадры 224×224 BGR uint8. Нормализация идёт уже на устройстве."""
+    mean = torch.tensor(IMAGENET_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1)
+    half = device.type == "cuda" and _use_fp16()
     predictions = []
-    with torch.inference_mode():
-        for start in range(0, len(tensors), batch_size):
-            batch = torch.stack(tensors[start : start + batch_size]).to(device)
-            gaze = model(batch)["pred_gaze"]
-            predictions.append(gaze.detach().float().cpu().numpy())
+    with (
+        torch.inference_mode(),
+        torch.autocast(device.type, dtype=torch.float16, enabled=half),
+    ):
+        for start in range(0, len(images), batch_size):
+            pixels = torch.from_numpy(np.stack(images[start : start + batch_size]))
+            pixels = pixels.to(device, non_blocking=True)
+            batch = pixels.flip(-1).permute(0, 3, 1, 2).float().div_(255.0)
+            gaze = model((batch - mean) / std)["pred_gaze"]
+            predictions.append(gaze.float().cpu().numpy())
     return np.concatenate(predictions, axis=0)
+
+
+def _use_fp16() -> bool:
+    return os.getenv("UNIGAZE_FP16", "1") != "0"
 
 
 def _make_reader(landmarks: LandmarksBackend):
@@ -224,8 +245,8 @@ class _MediaPipeFaces:
         from mediapipe.tasks.python import vision
 
         # На Mac сборка MediaPipe роняет CPU-делегат в детекторе лица.
-        # GPU принимает кадр только как RGBA. На сервере GPU нет.
-        self._gpu = sys.platform == "darwin"
+        # GPU принимает кадр только как RGBA.
+        self._gpu = _mediapipe_delegate() == "gpu"
         delegate = mp_python.BaseOptions.Delegate
         options = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(
@@ -290,6 +311,13 @@ class _FaceAlignmentFaces:
 
     def close(self):
         return None
+
+
+def _mediapipe_delegate() -> str:
+    delegate = os.getenv("MEDIAPIPE_DELEGATE") or ("gpu" if sys.platform == "darwin" else "cpu")
+    if delegate not in ("cpu", "gpu"):
+        raise ValueError(f"MEDIAPIPE_DELEGATE должен быть cpu или gpu, получено {delegate}")
+    return delegate
 
 
 def _mediapipe_model() -> Path:

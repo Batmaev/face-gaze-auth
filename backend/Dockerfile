@@ -9,7 +9,10 @@ ENV HF_HOME=/cache/huggingface
 
 COPY pyproject.toml .
 
-RUN uv sync --no-dev
+# cpu или gpu: сборка torch, см. extras в pyproject.toml
+ARG TORCH=cpu
+
+RUN uv sync --no-dev --extra "$TORCH"
 
 # Колесо webeyetrack на PyPI собрано без model_weights; берём модель из репозитория
 ADD --chmod=644 https://raw.githubusercontent.com/RedForestAI/WebEyeTrack/75fbd2f5f784f2eb3a39675a8dcbf1b01c697f1c/python/webeyetrack/model_weights/face_landmarker_v2_with_blendshapes.task \

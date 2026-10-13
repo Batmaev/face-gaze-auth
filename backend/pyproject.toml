@@ -19,13 +19,31 @@ dependencies = [
     "webeyetrack>=0.0.1",
 ]
 
-# для GPU-сборок убрать
-#
+# Сборка torch выбирается extra: `uv sync --extra cpu` или `uv sync --extra gpu`.
+[project.optional-dependencies]
+cpu = ["torch", "torchvision"]
+gpu = ["torch", "torchvision"]
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
-#
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "gpu" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "gpu" },
+]
+
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# Драйвер NVIDIA не ниже 580.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true

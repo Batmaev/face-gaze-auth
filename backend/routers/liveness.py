@@ -1,8 +1,11 @@
 import json
+import os
 
 from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
 import numpy as np
 import pandas as pd
+import torch
 import unigaze
 
 from models import StimulusResponse, LivenessResponse
@@ -14,7 +17,9 @@ from unigaze_helpers.trajectory import unigaze_gaze_from_video
 from log_decorator import log_handler
 
 
-unigaze_model = unigaze.load("unigaze_b16_joint", device="cpu")
+TORCH_DEVICE = os.getenv("TORCH_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+
+unigaze_model = unigaze.load("unigaze_b16_joint", device=TORCH_DEVICE)
 
 STIM_FPS = 60
 
@@ -143,10 +148,11 @@ async def islive_video(
         try:
             stim_x, stim_y = GENERATED_STIMULI[token]
         except KeyError:
-            stim_x = np.array(stim_x)
-            stim_y = np.array(stim_y)
+            pass
     if stim_x is None or stim_y is None:
         raise HTTPException(status_code=400, detail="Stimulus not found. Maybe the token is expired.")
+    stim_x = np.asarray(stim_x, dtype=float)
+    stim_y = np.asarray(stim_y, dtype=float)
 
     try:
         metadata_obj = json.loads(metadata)
@@ -158,7 +164,9 @@ async def islive_video(
         json.dump(metadata_obj, f, ensure_ascii=False, indent=2)
 
     try:
-        gaze = unigaze_gaze_from_video(videopath, unigaze_model, target_fps=15)
+        gaze = await run_in_threadpool(
+            unigaze_gaze_from_video, videopath, unigaze_model, target_fps=15
+        )
 
         if STIM_FPS % gaze.fps != 0:
             raise HTTPException(status_code=400, detail=f"Stimulus FPS {STIM_FPS} must be divisible by gaze FPS {gaze.fps} after downsampling.")
