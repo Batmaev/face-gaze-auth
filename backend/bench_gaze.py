@@ -1,7 +1,7 @@
 """Замер скорости траектории взгляда по видео.
 
 uv run --no-sync python bench_gaze.py --device cuda --repeat 5 data/0_1.mp4
-Делегат MediaPipe и fp16 задаются переменными MEDIAPIPE_DELEGATE и UNIGAZE_FP16.
+fp16 задаётся переменной UNIGAZE_FP16.
 """
 
 from __future__ import annotations
@@ -40,12 +40,15 @@ class _Timer:
 
 
 def _run(video: Path, model, args) -> tuple[dict, np.ndarray]:
-    landmarks = _Timer()
+    detect = _Timer()
+    prepare = _Timer()
     predict = _Timer()
+    original_detect = trajectory._detect_faces
     original_prepare = trajectory._prepare_frame
     original_predict = trajectory._predict
     sync = torch.cuda.synchronize if args.device == "cuda" else None
-    trajectory._prepare_frame = landmarks.wrap(original_prepare)
+    trajectory._detect_faces = detect.wrap(original_detect)
+    trajectory._prepare_frame = prepare.wrap(original_prepare)
     trajectory._predict = predict.wrap(original_predict, sync)
     try:
         start = time.perf_counter()
@@ -54,14 +57,15 @@ def _run(video: Path, model, args) -> tuple[dict, np.ndarray]:
         )
         total = time.perf_counter() - start
     finally:
+        trajectory._detect_faces = original_detect
         trajectory._prepare_frame = original_prepare
         trajectory._predict = original_predict
     frames = len(gaze.xy)
     return {
         "total_s": total,
-        "prepare_s": landmarks.seconds,
+        "prepare_s": detect.seconds + prepare.seconds,
         "predict_s": predict.seconds,
-        "other_s": total - landmarks.seconds - predict.seconds,
+        "other_s": total - detect.seconds - prepare.seconds - predict.seconds,
         "frames": frames,
         "faces": int(np.isfinite(gaze.xy[:, 0]).sum()),
     }, gaze.xy
@@ -87,13 +91,13 @@ def main():
     load_s = time.perf_counter() - start
     print(
         f"device={args.device} fp16={args.device == 'cuda' and trajectory._use_fp16()} batch={args.batch_size} "
-        f"mediapipe={trajectory._mediapipe_delegate()} torch={torch.__version__} "
+        f"torch={torch.__version__} "
         f"threads={torch.get_num_threads()} load={load_s:.2f}s"
     )
 
     saved = {}
     for video in args.videos:
-        # Первый прогон прогревает CUDA и MediaPipe, в статистику не идёт.
+        # Первый прогон прогревает CUDA и сети лица, в статистику не идёт.
         _run(video, model, args)
         runs = []
         xy = None

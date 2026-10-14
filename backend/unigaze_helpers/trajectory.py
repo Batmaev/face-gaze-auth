@@ -96,17 +96,16 @@ def unigaze_gaze_from_video(
     """Посчитать траекторию взгляда для видеофайла.
 
     model — уже загруженный unigaze.load(...). Кадры без лица остаются NaN
-    и не сдвигают остальные точки. Точки лица даёт MediaPipe Face Landmarker.
+    и не сдвигают остальные точки. Точки лица считают сети Face Landmarker
+    пакетом: каждый кадр с нуля, без трекинга режима VIDEO и без фильтра One Euro.
 
     target_fps — нижняя граница частоты оставленных кадров. Берётся каждый N-й
     кадр, N целое, так что итог не медленнее target_fps. None оставляет все кадры.
     """
-    reader = _MediaPipeFaces()
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         raise FileNotFoundError(f"не удалось открыть видео: {video}")
 
-    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     xy_rows: list[np.ndarray] = []
     ear_rows: list[float] = []
     images = []
@@ -118,25 +117,15 @@ def unigaze_gaze_from_video(
 
         raw_fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
         stride, fps = _sample_stride(raw_fps, target_fps)
-        progress = tqdm(total=frame_count or None, desc="gaze")
-        source_index = 0
-        while True:
-            keep = source_index % stride == 0
-            if keep:
-                ok, frame = capture.read()
-            else:
-                ok = capture.grab()
-            if not ok:
-                break
-            source_index += 1
-            progress.update(1)
-            if not keep:
-                continue
+        frames = _kept_frames(capture, stride)
+        stored = _detect_faces(frames, batch_size)
+        reader = _StoredLandmarks(stored)
+        progress = tqdm(total=len(frames) or None, desc="gaze")
+        for frame in frames:
             frame_index = len(xy_rows)
             xy_rows.append(np.full(2, np.nan, dtype=np.float64))
             ear_rows.append(np.nan)
-            timestamp_ms = int(round(frame_index * 1000.0 / fps))
-            prepared = _prepare_frame(reader, frame, timestamp_ms)
+            prepared = _prepare_frame(reader, frame, 0)
             if prepared is not None:
                 ear_score, sample = prepared
                 ear_rows[frame_index] = ear_score
@@ -144,7 +133,9 @@ def unigaze_gaze_from_video(
                     image, rotation, origin = sample
                     images.append(image)
                     samples.append((frame_index, rotation, origin))
+            progress.update(1)
         progress.close()
+        del frames
 
         if not images:
             return GazeTrajectory(
@@ -160,8 +151,6 @@ def unigaze_gaze_from_video(
             pitchyaw = _predict(model, images, batch_size, device, torch)
     finally:
         capture.release()
-        # close() у FaceLandmarker иногда ждёт секунду и дольше; GIL он при этом не держит.
-        threading.Thread(target=reader.close, daemon=True).start()
 
     xy = np.vstack(xy_rows)
     for row, (frame_index, rotation, origin) in enumerate(samples):
@@ -172,6 +161,43 @@ def unigaze_gaze_from_video(
             # y: и в кадре, и в стимуле ось смотрит вниз.
             xy[frame_index] = (-hit[0], hit[1])
     return GazeTrajectory(xy=xy, ear=np.asarray(ear_rows, dtype=np.float64), fps=fps)
+
+
+def _kept_frames(capture, stride: int) -> list[np.ndarray]:
+    frames = []
+    source_index = 0
+    while True:
+        keep = source_index % stride == 0
+        if keep:
+            ok, frame = capture.read()
+        else:
+            ok = capture.grab()
+        if not ok:
+            break
+        source_index += 1
+        if keep:
+            frames.append(frame)
+    return frames
+
+
+def _detect_faces(frames: list[np.ndarray], batch_size: int):
+    from unigaze_helpers.mediapipe_batch import face_landmarks_batch
+
+    return face_landmarks_batch(frames, batch_size=batch_size)
+
+
+class _StoredLandmarks:
+    def __init__(self, points: list[np.ndarray | None]):
+        self._points = points
+        self._index = 0
+
+    def find(self, frame: np.ndarray, timestamp_ms: int):
+        del frame, timestamp_ms
+        points = self._points[self._index]
+        self._index += 1
+        if points is None:
+            return None
+        return points, eye_aspect_ratio(points, _MP_LEFT_EAR, _MP_RIGHT_EAR)
 
 
 def _prepare_frame(reader, frame: np.ndarray, timestamp_ms: int):
@@ -220,62 +246,6 @@ def _predict(model, images, batch_size: int, device, torch) -> np.ndarray:
 
 def _use_fp16() -> bool:
     return os.getenv("UNIGAZE_FP16", "1") != "0"
-
-
-class _MediaPipeFaces:
-    def __init__(self):
-        import mediapipe as mp
-        from mediapipe.tasks import python as mp_python
-        from mediapipe.tasks.python import vision
-
-        # На Mac сборка MediaPipe роняет CPU-делегат в детекторе лица.
-        # GPU принимает кадр только как RGBA.
-        self._gpu = _mediapipe_delegate() == "gpu"
-        delegate = mp_python.BaseOptions.Delegate
-        options = vision.FaceLandmarkerOptions(
-            base_options=mp_python.BaseOptions(
-                model_asset_path=str(_mediapipe_model()),
-                delegate=delegate.GPU if self._gpu else delegate.CPU,
-            ),
-            running_mode=vision.RunningMode.VIDEO,
-            num_faces=1,
-        )
-        self._mp = mp
-        self._landmarker = vision.FaceLandmarker.create_from_options(options)
-        self._previous_ms = -1
-
-    def find(self, frame: np.ndarray, timestamp_ms: int):
-        if timestamp_ms <= self._previous_ms:
-            timestamp_ms = self._previous_ms + 1
-        self._previous_ms = timestamp_ms
-        if self._gpu:
-            pixels = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA))
-            image_format = self._mp.ImageFormat.SRGBA
-        else:
-            pixels = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            image_format = self._mp.ImageFormat.SRGB
-        image = self._mp.Image(image_format=image_format, data=pixels)
-        detection = self._landmarker.detect_for_video(image, timestamp_ms)
-        if not detection.face_landmarks:
-            return None
-        height, width = frame.shape[:2]
-        mesh = detection.face_landmarks[0]
-        landmarks = np.array(
-            [[point.x * width, point.y * height] for point in mesh],
-            dtype=np.float64,
-        )
-        ear = eye_aspect_ratio(landmarks, _MP_LEFT_EAR, _MP_RIGHT_EAR)
-        return landmarks, ear
-
-    def close(self):
-        self._landmarker.close()
-
-
-def _mediapipe_delegate() -> str:
-    delegate = os.getenv("MEDIAPIPE_DELEGATE") or ("gpu" if sys.platform == "darwin" else "cpu")
-    if delegate not in ("cpu", "gpu"):
-        raise ValueError(f"MEDIAPIPE_DELEGATE должен быть cpu или gpu, получено {delegate}")
-    return delegate
 
 
 def _mediapipe_model() -> Path:

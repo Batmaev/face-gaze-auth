@@ -21,10 +21,10 @@ ADD --chmod=644 \
     "$FACE_LANDMARKER_MODEL"
 
 # Иначе нет сертификатов для Hugging Face
-# libxcb1/libgl1/libglib2.0-0: GUI-сборка OpenCV (тянется через mediapipe)
-# libegl1/libgles2: mediapipe tasks грузит их даже с CPU-делегатом
+# libxcb1/libgl1/libglib2.0-0: GUI-сборка OpenCV
+# libgomp1: LiteRT (XNNPACK)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libxcb1 libgl1 libglib2.0-0 libegl1 libgles2 \
+    && apt-get install -y --no-install-recommends ca-certificates libxcb1 libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # BuildKit cache keeps the download across image rebuilds. The copy lands in
