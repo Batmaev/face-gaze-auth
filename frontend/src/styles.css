@@ -394,3 +394,10 @@ button:disabled {
 .verdict.fail .score {
   color: var(--fail);
 }
+
+.duration {
+  margin-top: 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}

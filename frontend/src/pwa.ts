@@ -45,10 +45,14 @@ export function isMobile(): boolean {
   return isIOS() || /Android|Mobi/i.test(navigator.userAgent);
 }
 
-export function registerServiceWorker() {
-  if ("serviceWorker" in navigator && import.meta.env.PROD) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("SW registration failed", error));
+/** Снимает service worker и Cache Storage у уже установленных клиентов. Новый воркер не регистрируется. */
+export function clearServiceWorkers() {
+  if ("serviceWorker" in navigator) {
+    void navigator.serviceWorker.getRegistrations().then((registrations) => {
+      for (const registration of registrations) void registration.unregister();
     });
+  }
+  if ("caches" in window) {
+    void caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
   }
 }
