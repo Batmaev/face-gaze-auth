@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import zipfile
 from pathlib import Path
@@ -30,9 +32,11 @@ def face_landmarks_batch(
 ) -> list[np.ndarray | None]:
     """Точки лица для каждого кадра, в пикселях кадра. None, если лица нет.
 
-    Сетка считается одним пакетом. На Apple GPU тот же пакет оказался медленнее
-    CPU и разошёлся с MediaPipe примерно на пиксель кропа, поэтому пакет идёт
-    на CPU.
+    Сетка считается одним пакетом. На NVIDIA она идёт через LiteRT GPU
+    (Vulkan/WebGPU), в float32: так точки совпадают с CPU. Детектор остаётся
+    на CPU, он и так около миллисекунды на кадр. На Apple GPU пакет был
+    медленнее и разъезжался, поэтому без CUDA остаётся CPU.
+    MEDIAPIPE_DEVICE=cpu|gpu|auto.
     """
     if not frames_bgr:
         return []
@@ -48,10 +52,18 @@ class _Runner:
         from ai_edge_litert.interpreter import Interpreter
 
         detector, landmarks = _model_files()
+        self._landmarks_path = landmarks
+        self._landmarks = None
         self._detector = Interpreter(model_path=str(detector))
         self._detector.allocate_tensors()
-        self._landmarks = Interpreter(model_path=str(landmarks))
-        self._landmarks.allocate_tensors()
+
+    def _cpu_landmarks(self):
+        if self._landmarks is None:
+            from ai_edge_litert.interpreter import Interpreter
+
+            self._landmarks = Interpreter(model_path=str(self._landmarks_path))
+            self._landmarks.allocate_tensors()
+        return self._landmarks
 
     def close(self):
         return None
@@ -111,17 +123,112 @@ class _Runner:
         return _decode_blazeface(outputs["regressors"][0], outputs["classificators"][0, :, 0])
 
     def _predict_tflite(self, crops: list[np.ndarray], batch_size: int) -> np.ndarray:
+        gpu = _gpu_landmarks(batch_size)
+        if gpu is not None:
+            return gpu.predict(crops)
+        landmarks = self._cpu_landmarks()
         predicted = []
-        input_index = self._landmarks.get_input_details()[0]["index"]
+        input_index = landmarks.get_input_details()[0]["index"]
         for start in range(0, len(crops), batch_size):
             batch = np.stack(crops[start : start + batch_size])
-            self._landmarks.resize_tensor_input(input_index, batch.shape)
-            self._landmarks.allocate_tensors()
-            self._landmarks.set_tensor(input_index, batch)
-            self._landmarks.invoke()
-            output = _landmark_output(self._landmarks)
+            landmarks.resize_tensor_input(input_index, batch.shape)
+            landmarks.allocate_tensors()
+            landmarks.set_tensor(input_index, batch)
+            landmarks.invoke()
+            output = _landmark_output(landmarks)
             predicted.append(output)
         return np.concatenate(predicted, axis=0)
+
+
+_GPU_LOCK = threading.Lock()
+_GPU_NETS: dict[int, "_GpuLandmarks"] = {}
+_GPU_FAILED = False
+_GPU_CHOICE: bool | None = None
+
+
+def _want_gpu() -> bool:
+    """auto: GPU только там, где есть CUDA. Apple GPU для этой сетки хуже CPU."""
+    global _GPU_CHOICE
+    if _GPU_CHOICE is None:
+        choice = os.getenv("MEDIAPIPE_DEVICE", "auto")
+        if choice == "cpu":
+            _GPU_CHOICE = False
+        elif choice == "gpu":
+            _GPU_CHOICE = True
+        else:
+            import torch
+
+            _GPU_CHOICE = bool(torch.cuda.is_available())
+    return _GPU_CHOICE
+
+
+def _gpu_landmarks(batch_size: int) -> "_GpuLandmarks | None":
+    global _GPU_FAILED
+    if _GPU_FAILED or not _want_gpu():
+        return None
+    with _GPU_LOCK:
+        net = _GPU_NETS.get(batch_size)
+        if net is not None:
+            return net
+        try:
+            net = _GpuLandmarks(batch_size)
+        except Exception as exc:
+            _GPU_FAILED = True
+            logging.getLogger(__name__).warning("MediaPipe GPU недоступен, сетка на CPU: %s", exc)
+            return None
+        _GPU_NETS[batch_size] = net
+        return net
+
+
+class _GpuLandmarks:
+    """Сетка Face Landmarker на GPU. Размер пакета фиксирован: смена размера заново компилирует граф."""
+
+    def __init__(self, batch_size: int):
+        from ai_edge_litert.compiled_model import CompiledModel
+        from ai_edge_litert.hardware_accelerator import HardwareAccelerator
+        from ai_edge_litert.options import GpuOptions, Options
+
+        _, landmarks = _model_files()
+        # float32 обязателен: fp16 уезжает на пару пикселей кропа.
+        options = Options(
+            hardware_accelerators=HardwareAccelerator.GPU | HardwareAccelerator.CPU,
+            gpu_options=GpuOptions(enforce_f32=True),
+        )
+        self.batch = batch_size
+        self.model = CompiledModel.from_file(str(landmarks), options=options)
+        if not self.model.is_fully_accelerated():
+            raise RuntimeError("сетка не целиком на GPU")
+        self.model.resize_input_tensor(
+            0, [batch_size, _LANDMARK_SIZE, _LANDMARK_SIZE, 3], strict=False
+        )
+        self.inputs = self.model.create_input_buffers(0)
+        self.outputs = self.model.create_output_buffers(0)
+        self.sizes = [
+            self.model.get_output_buffer_requirements(index)["buffer_size"] // 4
+            for index in range(len(self.outputs))
+        ]
+        self.shapes = [buffer.get_tensor_details()["shape"] for buffer in self.outputs]
+        dummy = np.zeros((batch_size, _LANDMARK_SIZE, _LANDMARK_SIZE, 3), np.float32)
+        self._invoke(dummy)
+
+    def predict(self, crops: list[np.ndarray]) -> np.ndarray:
+        with _GPU_LOCK:
+            rows = []
+            for start in range(0, len(crops), self.batch):
+                chunk = crops[start : start + self.batch]
+                batch = np.zeros((self.batch, _LANDMARK_SIZE, _LANDMARK_SIZE, 3), np.float32)
+                batch[: len(chunk)] = np.stack(chunk)
+                rows.append(self._invoke(batch)[: len(chunk)])
+            return np.concatenate(rows, axis=0)
+
+    def _invoke(self, batch: np.ndarray) -> np.ndarray:
+        self.inputs[0].write(np.ascontiguousarray(batch))
+        self.model.run_by_index(0, self.inputs, self.outputs)
+        outputs = [
+            buffer.read(size, np.float32).reshape(shape)
+            for buffer, size, shape in zip(self.outputs, self.sizes, self.shapes)
+        ]
+        return _landmark_rows(outputs)
 
 
 _FILES_LOCK = threading.Lock()
@@ -420,14 +527,15 @@ def _decode_landmarks(raw: np.ndarray, context) -> np.ndarray | None:
 
 
 def _landmark_output(interpreter) -> np.ndarray:
-    outputs = []
-    for item in interpreter.get_output_details():
-        value = interpreter.get_tensor(item["index"])
-        outputs.append(value.reshape(value.shape[0], -1))
+    outputs = [interpreter.get_tensor(item["index"]) for item in interpreter.get_output_details()]
+    return _landmark_rows(outputs)
+
+
+def _landmark_rows(outputs: list[np.ndarray]) -> np.ndarray:
     # Первый выход — 1434 координаты, второй — уверенность лица.
-    landmarks = outputs[0]
-    if landmarks.shape[-1] < 1434:
-        landmarks, other = outputs[1], outputs[0]
-        outputs[0], outputs[1] = landmarks, other
-    presence = outputs[1] if len(outputs) > 1 else np.ones((landmarks.shape[0], 1))
+    flat = [np.asarray(value).reshape(np.asarray(value).shape[0], -1) for value in outputs]
+    landmarks = flat[0]
+    if landmarks.shape[-1] < 1434 and len(flat) > 1:
+        landmarks, flat[1] = flat[1], landmarks
+    presence = flat[1] if len(flat) > 1 else np.ones((landmarks.shape[0], 1), np.float32)
     return np.concatenate([landmarks[:, :1434], presence[:, :1]], axis=1)

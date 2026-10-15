@@ -22,9 +22,10 @@ ADD --chmod=644 \
 
 # Иначе нет сертификатов для Hugging Face
 # libxcb1/libgl1/libglib2.0-0: GUI-сборка OpenCV
+# libegl1: Vulkan ICD NVIDIA, через него LiteRT гоняет сетку лица
 # libgomp1: LiteRT (XNNPACK)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libxcb1 libgl1 libglib2.0-0 libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates libxcb1 libgl1 libegl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # BuildKit cache keeps the download across image rebuilds. The copy lands in
