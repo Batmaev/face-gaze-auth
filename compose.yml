@@ -6,6 +6,8 @@ services:
     environment:
       HF_HOME: /cache/huggingface
       ROOT_PATH: /api
+      # uvicorn читает это, если fastapi run запущен без --workers
+      WEB_CONCURRENCY: "2"
     volumes:
       - ./backend:/app
       - huggingface_cache:/cache/huggingface

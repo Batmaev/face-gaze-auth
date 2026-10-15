@@ -21,5 +21,6 @@
 - `TORCH_DEVICE` — устройство для UniGaze, по умолчанию `cuda`, если доступна, иначе `cpu`;
 - `UNIGAZE_FP16=0` — отключить fp16 на CUDA;
 - `FACE_LANDMARKER_MODEL` — путь к `face_landmarker.task`. В Docker модель уже в образе, без Docker она скачивается в `~/.cache/unified-liveness` при первом запуске. Сети из архива считаются пакетом по кадрам, без трекинга.
+- `WEB_CONCURRENCY` — число процессов uvicorn. В compose стоит `2`: на 4 vCPU тестового сервера третий и четвёртый уже делят ядра на декоде видео.
 
 Замеры: `bench_gaze.py` (пайплайн по видео) и `bench_api.py` (нагрузка на `/islive_video`).
