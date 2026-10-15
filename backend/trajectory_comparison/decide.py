@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import joblib
 import numpy as np
@@ -11,7 +12,7 @@ linear_model = joblib.load(model_path)
 THRESHOLD = 0.5
 
 
-def align_and_compare_trajectories(df, fps: float) -> tuple[float, bool]:
+async def align_and_compare_trajectories(df, fps: float) -> tuple[float, bool]:
     """Алгоритм сравнения траекторий, принимающий решение о жизненности.
 
     df должен иметь колонки:
@@ -20,8 +21,15 @@ def align_and_compare_trajectories(df, fps: float) -> tuple[float, bool]:
     - blink (bool)
 
     Возвращает пару proba ∈ [0,1] и result (bool).
-    Добавляет новые колонки в df."""
+    Добавляет новые колонки в df.
 
+    Считается в рабочем потоке: внутри только CPU, и вызов с событийного
+    цикла иначе держал бы его до конца.
+    """
+    return await asyncio.to_thread(_align_and_compare_trajectories, df, fps)
+
+
+def _align_and_compare_trajectories(df, fps: float) -> tuple[float, bool]:
     normalize_df(df)
     align_gaze(df)
 

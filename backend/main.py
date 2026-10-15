@@ -1,10 +1,18 @@
+import os
+
 from fastapi import FastAPI
 
 from routers import registration_router, liveness_router
 from log_decorator import RequestContextMiddleware
 
 
-app = FastAPI(title="Face Gaze Auth API", version="1.0.0")
+# Caddy и Vite срезают /api перед проксированием. Без префикса Swagger
+# запрашивает /openapi.json с корня сайта и попадает во фронтенд.
+app = FastAPI(
+    title="Face Gaze Auth API",
+    version="1.0.0",
+    root_path=os.environ.get("ROOT_PATH", "/api"),
+)
 
 app.add_middleware(RequestContextMiddleware)
 

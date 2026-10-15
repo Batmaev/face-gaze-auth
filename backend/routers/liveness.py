@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
 from fastapi.concurrency import run_in_threadpool
@@ -14,7 +15,7 @@ from stimulus.generate import eval_spline, random_spline, sample_at_fps
 from trajectory_comparison.fit import find_blinks
 from trajectory_comparison.decide import align_and_compare_trajectories
 from unigaze_helpers.trajectory import unigaze_gaze_from_video
-from log_decorator import log_handler
+from log_decorator import log_handler, stage
 
 
 TORCH_DEVICE = os.getenv("TORCH_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,6 +28,10 @@ N_CTRL_POINTS = 6
 N_FRAMES = STIM_DURATION_SEC * STIM_FPS
 
 router = APIRouter(tags=["Liveness"])
+
+
+def _stage(name: str, started: float) -> None:
+    stage(name, time.perf_counter() - started)
 
 
 def _parse_ctrl(raw: str | None) -> np.ndarray | None:
@@ -147,7 +152,9 @@ async def check_liveness(
 
         df['blink'] = find_blinks(left_eye_blink, right_eye_blink)
 
-        score, is_live = align_and_compare_trajectories(df, fps)
+        started = time.perf_counter()
+        score, is_live = await align_and_compare_trajectories(df, fps)
+        _stage("align", started)
 
         return LivenessResponse(
             is_live=is_live,
@@ -207,8 +214,13 @@ async def islive_video(
 
     videopath = video_dir / (generate_name_from_time() + ext)
 
+    started = time.perf_counter()
     content = await file.read()
+    _stage("read", started)
+    started = time.perf_counter()
     videopath.write_bytes(content)
+    write_seconds = time.perf_counter() - started
+    stage("write", write_seconds)
 
     stim_x, stim_y, parsed_ctrl = _resolve_stimulus(token, _parse_ctrl(ctrl), stim_x, stim_y)
 
@@ -223,13 +235,17 @@ async def islive_video(
     if parsed_ctrl is not None:
         metadata_obj["ctrl"] = parsed_ctrl.tolist()
 
+    started = time.perf_counter()
     with open(videopath.with_suffix(".json"), "w") as f:
         json.dump(metadata_obj, f, ensure_ascii=False, indent=2)
+    stage("write", write_seconds + time.perf_counter() - started)
 
     try:
         gaze = await run_in_threadpool(
             unigaze_gaze_from_video, videopath, unigaze_model, target_fps=15
         )
+        for name, seconds in gaze.seconds.items():
+            stage(name, seconds)
 
         stim_x, stim_y = _match_gaze_fps(stim_x, stim_y, parsed_ctrl, gaze.fps)
 
@@ -243,7 +259,9 @@ async def islive_video(
             'blink': False,
         })
 
-        score, is_live = align_and_compare_trajectories(df, gaze.fps)
+        started = time.perf_counter()
+        score, is_live = await align_and_compare_trajectories(df, gaze.fps)
+        _stage("align", started)
 
         return LivenessResponse(
             is_live=is_live,

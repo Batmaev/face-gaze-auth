@@ -10,8 +10,9 @@ import hashlib
 import os
 import sys
 import threading
+import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -60,11 +61,14 @@ class GazeTrajectory:
     ear: степень открытости глаз, меньший из двух. Около 0.2 и ниже — моргание.
     UniGaze сам моргания не помечает. NaN, если лица на кадре нет.
     fps: частота оставленных кадров после целого прореживания.
+    seconds: длительности этапов в секундах: decode, mediapipe, prepare,
+    unigaze и, если предсказание было, geometry.
     """
 
     xy: np.ndarray
     ear: np.ndarray
     fps: float
+    seconds: dict[str, float] = field(default_factory=dict)
 
 
 def _sample_stride(source_fps: float, target_fps: float | None) -> tuple[int, float]:
@@ -110,15 +114,21 @@ def unigaze_gaze_from_video(
     ear_rows: list[float] = []
     images = []
     samples = []
+    seconds: dict[str, float] = {}
 
     try:
         import torch
 
         raw_fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
         stride, fps = _sample_stride(raw_fps, target_fps)
+        started = time.perf_counter()
         frames = _kept_frames(capture, stride)
+        seconds["decode"] = time.perf_counter() - started
+        started = time.perf_counter()
         stored = _detect_faces(frames, batch_size)
+        seconds["mediapipe"] = time.perf_counter() - started
         reader = _StoredLandmarks(stored)
+        started = time.perf_counter()
         for frame in frames:
             frame_index = len(xy_rows)
             xy_rows.append(np.full(2, np.nan, dtype=np.float64))
@@ -131,6 +141,7 @@ def unigaze_gaze_from_video(
                     image, rotation, origin = sample
                     images.append(image)
                     samples.append((frame_index, rotation, origin))
+        seconds["prepare"] = time.perf_counter() - started
         del frames
 
         if not images:
@@ -138,17 +149,21 @@ def unigaze_gaze_from_video(
                 xy=np.vstack(xy_rows) if xy_rows else np.zeros((0, 2)),
                 ear=np.asarray(ear_rows, dtype=np.float64),
                 fps=fps,
+                seconds=seconds,
             )
 
         device = next(model.parameters()).device
         model.eval()
         # Параллельные вызовы torch на CPU делят одни ядра и тормозят в десятки раз.
+        started = time.perf_counter()
         with _PREDICT_LOCK:
             pitchyaw = _predict(model, images, batch_size, device, torch)
+        seconds["unigaze"] = time.perf_counter() - started
     finally:
         capture.release()
 
     xy = np.vstack(xy_rows)
+    started = time.perf_counter()
     for row, (frame_index, rotation, origin) in enumerate(samples):
         gaze = gaze_in_camera(pitchyaw[row], rotation)
         hit = camera_plane_hit(origin, gaze)
@@ -156,7 +171,8 @@ def unigaze_gaze_from_video(
             # x: кадр не зеркальный, право экрана слева на изображении.
             # y: и в кадре, и в стимуле ось смотрит вниз.
             xy[frame_index] = (-hit[0], hit[1])
-    return GazeTrajectory(xy=xy, ear=np.asarray(ear_rows, dtype=np.float64), fps=fps)
+    seconds["geometry"] = time.perf_counter() - started
+    return GazeTrajectory(xy=xy, ear=np.asarray(ear_rows, dtype=np.float64), fps=fps, seconds=seconds)
 
 
 def _kept_frames(capture, stride: int) -> list[np.ndarray]:

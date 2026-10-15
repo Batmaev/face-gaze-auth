@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     environment:
       HF_HOME: /cache/huggingface
+      ROOT_PATH: /api
     volumes:
       - ./backend:/app
       - huggingface_cache:/cache/huggingface

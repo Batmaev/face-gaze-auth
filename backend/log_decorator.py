@@ -18,6 +18,21 @@ LOG_DIR.mkdir(exist_ok=True)
 
 # Контекстная переменная для хранения текущего Request
 _current_request: ContextVar[Request | None] = ContextVar("current_request", default=None)
+# Длительности этапов текущего запроса, их пишет хендлер.
+_stages: ContextVar[dict[str, float] | None] = ContextVar("handler_stages", default=None)
+
+
+def stage(name: str, seconds: float) -> None:
+    """Запомнить длительность этапа. Декоратор хендлера кладёт её в лог."""
+    stages = _stages.get()
+    if stages is not None:
+        stages[name] = round(seconds, 4)
+
+
+def _attach_stages(log_entry: dict) -> None:
+    stages = _stages.get()
+    if stages:
+        log_entry["stages_seconds"] = dict(stages)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -126,27 +141,30 @@ def log_handler(func):
         if request_info:
             log_entry["request"] = request_info
         log_entry["args"] = logged_kwargs
-        
+
+        stages_token = _stages.set({})
         try:
-            result = await func(*args, **kwargs)
+            try:
+                result = await func(*args, **kwargs)
+            except Exception as e:
+                elapsed = time.time() - start_time
+                log_entry["exception"] = {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+                log_entry["elapsed_time_seconds"] = round(elapsed, 4)
+                _attach_stages(log_entry)
+                asyncio.create_task(_write_log(log_entry))
+                raise
+
             elapsed = time.time() - start_time
-            
             log_entry["result"] = _serialize_result(result)
             log_entry["elapsed_time_seconds"] = round(elapsed, 4)
-            
+            _attach_stages(log_entry)
             asyncio.create_task(_write_log(log_entry))
             return result
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            log_entry["exception"] = {
-                "type": type(e).__name__,
-                "message": str(e),
-                "traceback": traceback.format_exc(),
-            }
-            log_entry["elapsed_time_seconds"] = round(elapsed, 4)
-            
-            asyncio.create_task(_write_log(log_entry))
-            raise
+        finally:
+            _stages.reset(stages_token)
     
     return wrapper
