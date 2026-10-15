@@ -61,8 +61,9 @@ class GazeTrajectory:
     ear: степень открытости глаз, меньший из двух. Около 0.2 и ниже — моргание.
     UniGaze сам моргания не помечает. NaN, если лица на кадре нет.
     fps: частота оставленных кадров после целого прореживания.
-    seconds: длительности этапов в секундах: decode, mediapipe, prepare,
-    unigaze и, если предсказание было, geometry.
+    seconds: длительности этапов в секундах: decode, detector, mesh, prepare,
+    unigaze и, если предсказание было, geometry. detector — кроп и детектор
+    лица, mesh — сетка.
     """
 
     xy: np.ndarray
@@ -124,9 +125,7 @@ def unigaze_gaze_from_video(
         started = time.perf_counter()
         frames = _kept_frames(capture, stride)
         seconds["decode"] = time.perf_counter() - started
-        started = time.perf_counter()
-        stored = _detect_faces(frames, batch_size)
-        seconds["mediapipe"] = time.perf_counter() - started
+        stored, seconds["detector"], seconds["mesh"] = _detect_faces(frames, batch_size)
         reader = _StoredLandmarks(stored)
         started = time.perf_counter()
         for frame in frames:

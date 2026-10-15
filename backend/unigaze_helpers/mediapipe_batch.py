@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -29,8 +30,12 @@ def face_landmarks_batch(
     frames_bgr: list[np.ndarray],
     *,
     batch_size: int = 32,
-) -> list[np.ndarray | None]:
+) -> tuple[list[np.ndarray | None], float, float]:
     """Точки лица для каждого кадра, в пикселях кадра. None, если лица нет.
+
+    Вместе с точками возвращаются секунды детектора и сетки. В детектор входит
+    загрузка его сети и кроп: перевод цвета и оба варпа. Сетка — пакетное
+    предсказание и разбор точек.
 
     Сетка считается одним пакетом. На NVIDIA она идёт через LiteRT GPU
     (Vulkan/WebGPU), в float32: так точки совпадают с CPU. Детектор остаётся
@@ -39,10 +44,13 @@ def face_landmarks_batch(
     MEDIAPIPE_DEVICE=cpu|gpu|auto.
     """
     if not frames_bgr:
-        return []
+        return [], 0.0, 0.0
+    started = time.perf_counter()
     runner = _Runner()
+    setup = time.perf_counter() - started
     try:
-        return runner.landmarks(frames_bgr, batch_size)
+        points, detector_s, mesh_s = runner.landmarks(frames_bgr, batch_size)
+        return points, detector_s + setup, mesh_s
     finally:
         runner.close()
 
@@ -68,7 +76,10 @@ class _Runner:
     def close(self):
         return None
 
-    def landmarks(self, frames: list[np.ndarray], batch_size: int) -> list[np.ndarray | None]:
+    def landmarks(
+        self, frames: list[np.ndarray], batch_size: int
+    ) -> tuple[list[np.ndarray | None], float, float]:
+        started = time.perf_counter()
         crops: list[np.ndarray | None] = []
         contexts = []
         for frame in frames:
@@ -80,19 +91,21 @@ class _Runner:
                 crop, context = prepared
                 crops.append(crop)
                 contexts.append(context)
+        detector_s = time.perf_counter() - started
 
         ready = [(index, crop) for index, crop in enumerate(crops) if crop is not None]
         points: list[np.ndarray | None] = [None] * len(frames)
         if not ready:
-            return points
+            return points, detector_s, 0.0
 
+        started = time.perf_counter()
         predicted = self._predict_tflite([crop for _, crop in ready], batch_size)
 
         for row, (index, _) in enumerate(ready):
             decoded = _decode_landmarks(predicted[row], contexts[index])
             if decoded is not None:
                 points[index] = decoded
-        return points
+        return points, detector_s, time.perf_counter() - started
 
     def _crop(self, frame_bgr: np.ndarray):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
