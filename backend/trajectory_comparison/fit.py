@@ -1,8 +1,10 @@
-from sklearn.linear_model import RANSACRegressor
 import numpy as np
+from statsmodels.robust.norms import TukeyBiweight
+from statsmodels.robust.robust_linear_model import RLM
+from statsmodels.tools import add_constant
 
 
-def align_gaze(df, threshold=0.15, n_iterations=5, initial_lag_guess=6, min_lag=-12, max_lag=12):
+def align_gaze(df, n_iterations=3, initial_lag_guess=0, min_lag=-12, max_lag=12):
     """
     Подбираем пространственное преобразование (калибровку) и сдвиг во времени, чтобы траектории взгляда и стимула максимально совпали.
 
@@ -12,35 +14,33 @@ def align_gaze(df, threshold=0.15, n_iterations=5, initial_lag_guess=6, min_lag=
     - blink (bool)
 
     Добавляем в df колонки:
-    - gaze_fit_x, gaze_fit_y (float)
-    - inlier (bool)
+    - gaze_fit_x, gaze_fit_y (float) — стимул, предсказанный из взгляда: k * gaze + b
+    - k_x, k_y, b_x, b_y — коэффициенты этого предсказания
+    - inlier, inlier_x, inlier_y (bool)
+    - weight_x, weight_y (float) — веса бивеса Тьюки
     - lag (int, повторяющееся число, category)
     - max_corr (float, повторяющееся число, category)
-    - k_x, k_y (коэффициенты калибровки, category)
 
     Возвращаем df.
 
     Алгоритм:
 
-    1. Делаем догадку о лаге (6 кадров = 100 ms), затем находим выбросы с помощью RANSAC из sklearn
+    1. Делаем догадку о лаге (6 кадров = 100 ms), затем находим выбросы устойчивой регрессией RLM с бивесом Тьюки
     2. Зная выбросы, перебираем лаги и находим тот, при котором корреляция максимальна
     3. Зная лаг, находим более правильный список выбросов
-    3. Повторяем `n_iterations` раз
+    4. Повторяем `n_iterations` раз
 
-    `threshold` — порог в пикселях для RANSAC; выше — точка записывается в выбросы и не учитывается при подборе преобразования и сдвига во времени
+    Явного списка выбросов нет: бивес Тьюки обнуляет вес за своим порогом.
+    Для лага берутся точки с ненулевым весом. Если все веса нулевые, берутся все точки.
 
     Моргания (из колонки `blink`) считаются "гарантированными выбросами"
     """
 
-    # initial guess for lag => find outliers
-    inlier_mask = ransac_independent(df, lag=initial_lag_guess, threshold=threshold)
+    inlier_mask = rlm_tukey(df, lag=initial_lag_guess)
 
     for _ in range(n_iterations):
-        # get true lag based on inliers
         lag, max_corr = get_lag(df, inlier_mask, min_lag=min_lag, max_lag=max_lag)
-
-        # get better scale fit
-        inlier_mask = ransac_independent(df, lag, threshold=threshold)
+        inlier_mask = rlm_tukey(df, lag)
 
     df['lag'] = lag
     df['lag'] = df['lag'].astype('category')
@@ -48,7 +48,6 @@ def align_gaze(df, threshold=0.15, n_iterations=5, initial_lag_guess=6, min_lag=
     df['max_corr'] = df['max_corr'].astype('category')
 
     return df
-
 
 
 def calculate_corrs(df, gaze_col='gaze_x', stim_col='stim_x', min_lag=0, max_lag=60):
@@ -84,42 +83,60 @@ def find_blinks(left_eye_blink, right_eye_blink, threshold=0.8, left_pad=5, righ
     return blinks
 
 
-def ransac_independent(df, lag, threshold=100.0):
+def rlm_tukey(df, lag):
+    """RLM с бивесом Тьюки: stim_shift = k * gaze + b, отдельно по осям."""
     df[['stim_shift_x', 'stim_shift_y']] = df[['stim_x', 'stim_y']].shift(lag)
-    Xx = df[['gaze_x']].values
-    Xy = df[['gaze_y']].values
-    yx = df[['stim_shift_x']].values
-    yy = df[['stim_shift_y']].values
+    gaze_x = df['gaze_x'].to_numpy(dtype=float)
+    gaze_y = df['gaze_y'].to_numpy(dtype=float)
+    stim_x = df['stim_shift_x'].to_numpy(dtype=float)
+    stim_y = df['stim_shift_y'].to_numpy(dtype=float)
 
-    valid_mask = (
-        np.isfinite(Xx).ravel() &
-        np.isfinite(Xy).ravel() &
-        np.isfinite(yx).ravel() &
-        np.isfinite(yy).ravel() &
-        (np.arange(len(Xx)) >= lag) &
+    valid = (
+        np.isfinite(gaze_x) &
+        np.isfinite(gaze_y) &
+        np.isfinite(stim_x) &
+        np.isfinite(stim_y) &
+        (np.arange(len(df)) >= lag) &
         ~df['blink'].to_numpy(dtype=bool)
     )
 
-    Xx_valid = Xx[valid_mask].reshape(-1, 1)
-    Xy_valid = Xy[valid_mask].reshape(-1, 1)
-    yx = yx[valid_mask]
-    yy = yy[valid_mask]
+    slope_x, intercept_x, weight_x = _fit_rlm_tukey_axis(gaze_x[valid], stim_x[valid])
+    slope_y, intercept_y, weight_y = _fit_rlm_tukey_axis(gaze_y[valid], stim_y[valid])
 
-    rx = RANSACRegressor(residual_threshold=threshold, stop_probability=1, max_trials=10_000)
-    ry = RANSACRegressor(residual_threshold=threshold, stop_probability=1, max_trials=10_000)
+    df['weight_x'] = np.nan
+    df['weight_y'] = np.nan
+    df.loc[valid, 'weight_x'] = weight_x
+    df.loc[valid, 'weight_y'] = weight_y
 
-    rx.fit(Xx_valid, yx)
-    ry.fit(Xy_valid, yy)
+    for name, value in (
+        ('k_x', slope_x), ('k_y', slope_y),
+        ('b_x', intercept_x), ('b_y', intercept_y),
+    ):
+        df[name] = value
+        df[name] = df[name].astype('category')
 
-    df['k_x'] = rx.estimator_.coef_[0][0]
-    df['k_y'] = ry.estimator_.coef_[0][0]
-    df['k_x'] = df['k_x'].astype('category')
-    df['k_y'] = df['k_y'].astype('category')
+    df['gaze_fit_x'] = slope_x * np.nan_to_num(gaze_x) + intercept_x
+    df['gaze_fit_y'] = slope_y * np.nan_to_num(gaze_y) + intercept_y
 
-    df['gaze_fit_x'] = rx.predict(Xx)
-    df['gaze_fit_y'] = ry.predict(Xy)
-
-    df['inlier'] = False
-    df.loc[valid_mask, 'inlier'] = rx.inlier_mask_ & ry.inlier_mask_
-
+    inlier_x = np.zeros(len(df), dtype=bool)
+    inlier_y = np.zeros(len(df), dtype=bool)
+    inlier_x[valid] = _positive_weights(weight_x)
+    inlier_y[valid] = _positive_weights(weight_y)
+    df['inlier_x'] = inlier_x
+    df['inlier_y'] = inlier_y
+    df['inlier'] = inlier_x & inlier_y
     return df['inlier']
+
+
+def _fit_rlm_tukey_axis(x, y):
+    exog = add_constant(np.asarray(x, dtype=float), has_constant='add')
+    result = RLM(np.asarray(y, dtype=float), exog, M=TukeyBiweight()).fit()
+    weights = np.asarray(result.weights, dtype=float).ravel()
+    return float(result.params[1]), float(result.params[0]), weights
+
+
+def _positive_weights(weights):
+    inliers = np.asarray(weights) > 0
+    if not np.any(inliers):
+        return np.ones(len(weights), dtype=bool)
+    return inliers

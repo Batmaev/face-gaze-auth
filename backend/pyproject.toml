@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.14.0",
     "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
+    "statsmodels>=0.14.6",
     "torch",
     "torchvision",
     "unigaze>=0.1.3",
