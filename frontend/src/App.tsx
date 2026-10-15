@@ -103,6 +103,7 @@ export default function App() {
       const result = await checkLivenessVideo({
         userId: user!.id,
         token: stimulus.token,
+        ctrl: stimulus.ctrl,
         video: recording.blob,
         filename: `video.${extensionFor(recording.mimeType)}`,
         metadata: {

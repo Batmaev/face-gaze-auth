@@ -13,11 +13,13 @@ interface Props {
 export default function ResultScreen({ stimulus, result, uploadMs, processingMs, onRetry }: Props) {
   const { stimT, gazeT } = useMemo(() => {
     const stimT = stimulus.x.map((_, i) => i / stimulus.fps);
-    // Сервер берёт stim[::step][-n:] и gaze[:n], то есть взгляд выровнен по концу стимула.
-    const step = Math.max(1, Math.round(stimulus.fps / result.fps));
+    // Сервер берёт отсчёты стимула в моменты взгляда и stim[-n:], gaze[:n]:
+    // взгляд выровнен по концу стимула. При целом шаге это stim[::step].
+    const step = stimulus.fps / result.fps;
     const n = result.gaze_fit_x.length;
-    const offset = Math.ceil(stimulus.x.length / step) - n;
-    const gazeT = result.gaze_fit_x.map((_, i) => ((offset + i) * step) / stimulus.fps);
+    const sampled = Math.floor((stimulus.x.length - 1e-9) / step) + 1;
+    const offset = sampled - n;
+    const gazeT = result.gaze_fit_x.map((_, i) => (offset + i) / result.fps);
     return { stimT, gazeT };
   }, [stimulus, result]);
 

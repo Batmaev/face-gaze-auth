@@ -7,6 +7,8 @@ export interface Stimulus {
   token: string;
   x: number[];
   y: number[];
+  /** Контрольные точки сплайна, (n, 2). Сервер по ним восстановит траекторию, если токена нет в кэше воркера. */
+  ctrl: number[][];
 }
 
 export interface LivenessResult {
@@ -54,6 +56,7 @@ export function getStimulus(): Promise<Stimulus> {
 export function checkLivenessVideo(params: {
   userId: string;
   token: string;
+  ctrl: number[][];
   video: Blob;
   filename: string;
   metadata: Record<string, unknown>;
@@ -63,6 +66,7 @@ export function checkLivenessVideo(params: {
   const form = new FormData();
   form.append("user_id", params.userId);
   form.append("token", params.token);
+  form.append("ctrl", JSON.stringify(params.ctrl));
   form.append("metadata", JSON.stringify(params.metadata));
   form.append("file", params.video, params.filename);
 

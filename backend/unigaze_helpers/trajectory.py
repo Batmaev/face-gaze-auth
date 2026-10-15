@@ -113,14 +113,12 @@ def unigaze_gaze_from_video(
 
     try:
         import torch
-        from tqdm import tqdm
 
         raw_fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
         stride, fps = _sample_stride(raw_fps, target_fps)
         frames = _kept_frames(capture, stride)
         stored = _detect_faces(frames, batch_size)
         reader = _StoredLandmarks(stored)
-        progress = tqdm(total=len(frames) or None, desc="gaze")
         for frame in frames:
             frame_index = len(xy_rows)
             xy_rows.append(np.full(2, np.nan, dtype=np.float64))
@@ -133,8 +131,6 @@ def unigaze_gaze_from_video(
                     image, rotation, origin = sample
                     images.append(image)
                     samples.append((frame_index, rotation, origin))
-            progress.update(1)
-        progress.close()
         del frames
 
         if not images:

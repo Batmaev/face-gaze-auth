@@ -8,12 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
-
-# tqdm читает переменную при импорте.
-os.environ.setdefault("TQDM_DISABLE", "1")
 
 import numpy as np
 import torch

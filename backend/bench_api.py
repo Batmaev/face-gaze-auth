@@ -20,11 +20,15 @@ import numpy as np
 async def _one(client: httpx.AsyncClient, url: str, video: bytes, stim: dict) -> tuple[float, dict]:
     data = {
         "user_id": "bench",
-        # Неизвестный токен: сервер берёт stim_x и stim_y из формы.
+        # Неизвестный токен: сервер собирает стимул из контрольных точек.
+        # В старых JSON их нет, тогда остаются готовые stim_x и stim_y.
         "token": "bench",
-        "stim_x": [str(value) for value in stim["stim_x"]],
-        "stim_y": [str(value) for value in stim["stim_y"]],
     }
+    if "ctrl" in stim:
+        data["ctrl"] = json.dumps(stim["ctrl"])
+    else:
+        data["stim_x"] = [str(value) for value in stim["stim_x"]]
+        data["stim_y"] = [str(value) for value in stim["stim_y"]]
     start = time.perf_counter()
     response = await client.post(
         f"{url}/islive_video", data=data, files={"file": ("video.mp4", video, "video/mp4")}

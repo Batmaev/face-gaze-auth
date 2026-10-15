@@ -23,6 +23,10 @@ class StimulusResponse(BaseModel):
     token: str = Field(..., description="Stimulus will be saved on the server for 3 minutes with this token")
     x: list[float]
     y: list[float]
+    ctrl: list[list[float]] = Field(
+        ...,
+        description="Spline control points, shape (n, 2). Shorter than knots plus coefficients; another worker can rebuild x, y from them",
+    )
 
 
 class LivenessResponse(BaseModel):
