@@ -18,7 +18,7 @@ type Screen =
   | { name: "instruction" }
   | { name: "stimulus"; stimulus: Stimulus }
   | { name: "processing"; stage: "uploading" | "checking"; progress: number }
-  | { name: "result"; stimulus: Stimulus; result: LivenessResult; durationMs: number }
+  | { name: "result"; stimulus: Stimulus; result: LivenessResult; uploadMs: number; processingMs: number }
   | { name: "error"; message: string };
 
 // Токен стимула живёт на сервере 3 минуты, берём с запасом.
@@ -96,6 +96,7 @@ export default function App() {
 
   const finishTest = async (stimulus: Stimulus, recording: Recording, run: StimulusRun) => {
     const startedAt = performance.now();
+    let uploadedAt: number | null = null;
     setScreen({ name: "processing", stage: "uploading", progress: 0 });
     const track = stream?.getVideoTracks()[0];
     try {
@@ -132,9 +133,20 @@ export default function App() {
           user_agent: navigator.userAgent,
         },
         onUploadProgress: (progress) => setScreen({ name: "processing", stage: "uploading", progress }),
-        onUploaded: () => setScreen({ name: "processing", stage: "checking", progress: 1 }),
+        onUploaded: () => {
+          uploadedAt = performance.now();
+          setScreen({ name: "processing", stage: "checking", progress: 1 });
+        },
       });
-      setScreen({ name: "result", stimulus, result, durationMs: performance.now() - startedAt });
+      const finishedAt = performance.now();
+      const uploadEndedAt = uploadedAt ?? finishedAt;
+      setScreen({
+        name: "result",
+        stimulus,
+        result,
+        uploadMs: uploadEndedAt - startedAt,
+        processingMs: finishedAt - uploadEndedAt,
+      });
     } catch (error) {
       setScreen({ name: "error", message: `Проверка не удалась: ${errorText(error)}` });
     }
@@ -193,7 +205,8 @@ export default function App() {
         <ResultScreen
           stimulus={screen.stimulus}
           result={screen.result}
-          durationMs={screen.durationMs}
+          uploadMs={screen.uploadMs}
+          processingMs={screen.processingMs}
           onRetry={() => setScreen({ name: "instruction" })}
         />
       );
