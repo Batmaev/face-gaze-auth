@@ -5,7 +5,6 @@ import time
 from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
 from fastapi.concurrency import run_in_threadpool
 import numpy as np
-import pandas as pd
 import torch
 import unigaze
 
@@ -13,7 +12,7 @@ from models import StimulusResponse, LivenessResponse
 from utils import DATA_DIR, GENERATED_STIMULI, generate_short_id, generate_name_from_time
 from stimulus.generate import eval_spline, random_spline, sample_at_fps
 from trajectory_comparison.fit import find_blinks
-from trajectory_comparison.decide import align_and_compare_trajectories
+from trajectory_comparison.decide import LivenessDecision, compare_trajectories
 from unigaze_helpers.trajectory import unigaze_gaze_from_video
 from log_decorator import log_handler, stage
 
@@ -32,6 +31,23 @@ router = APIRouter(tags=["Liveness"])
 
 def _stage(name: str, started: float) -> None:
     stage(name, time.perf_counter() - started)
+
+
+def _floats(values: np.ndarray) -> list[float | None]:
+    return [None if not np.isfinite(value) else float(value) for value in values]
+
+
+def _liveness_response(decision: LivenessDecision, fps: float) -> LivenessResponse:
+    for name, seconds in decision.seconds.items():
+        stage(name, seconds)
+    return LivenessResponse(
+        is_live=decision.is_live,
+        score=decision.score,
+        gaze_x=_floats(decision.gaze_x),
+        gaze_y=_floats(decision.gaze_y),
+        inlier=decision.inlier.tolist(),
+        fps=fps,
+    )
 
 
 def _parse_ctrl(raw: str | None) -> np.ndarray | None:
@@ -140,31 +156,18 @@ async def check_liveness(
     stim_x, stim_y, _parsed_ctrl = _resolve_stimulus(token, parsed_ctrl, stim_x, stim_y)
 
     try:
-        min_len = min(len(stim_x), len(stim_y), len(gaze_x), len(gaze_y))
-        df = pd.DataFrame({
-            'stim_x': stim_x[:min_len],
-            'stim_y': stim_y[:min_len],
-            'gaze_x': gaze_x[:min_len],
-            'gaze_y': gaze_y[:min_len],
-            'left_eye_blink': left_eye_blink[:min_len],
-            'right_eye_blink': right_eye_blink[:min_len],
-        })
-
-        df['blink'] = find_blinks(left_eye_blink, right_eye_blink)
-
-        started = time.perf_counter()
-        score, is_live = await align_and_compare_trajectories(df, fps)
-        _stage("align", started)
-
-        return LivenessResponse(
-            is_live=is_live,
-            score=score,
-            gaze_fit_x=df.gaze_fit_x,
-            gaze_fit_y=df.gaze_fit_y,
-            fps=fps,
-            lag=df.lag.iloc[0],
-            inlier=df.inlier,
+        min_len = min(
+            len(stim_x), len(stim_y), len(gaze_x), len(gaze_y), len(left_eye_blink), len(right_eye_blink),
         )
+        blink = find_blinks(left_eye_blink[:min_len], right_eye_blink[:min_len])
+        decision = await compare_trajectories(
+            gaze_x[:min_len],
+            gaze_y[:min_len],
+            stim_x[:min_len],
+            stim_y[:min_len],
+            blink,
+        )
+        return _liveness_response(decision, fps)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
@@ -250,28 +253,14 @@ async def islive_video(
         stim_x, stim_y = _match_gaze_fps(stim_x, stim_y, parsed_ctrl, gaze.fps)
 
         min_len = min(len(stim_x), len(stim_y), len(gaze.xy))
-
-        df = pd.DataFrame({
-            'stim_x': stim_x[-min_len:],
-            'stim_y': stim_y[-min_len:],
-            'gaze_x': gaze.xy[:, 0][:min_len],
-            'gaze_y': gaze.xy[:, 1][:min_len],
-            'blink': False,
-        })
-
-        started = time.perf_counter()
-        score, is_live = await align_and_compare_trajectories(df, gaze.fps)
-        _stage("align", started)
-
-        return LivenessResponse(
-            is_live=is_live,
-            score=score,
-            gaze_fit_x=df.gaze_fit_x,
-            gaze_fit_y=df.gaze_fit_y,
-            fps=gaze.fps,
-            lag=df.lag.iloc[0],
-            inlier=df.inlier,
+        decision = await compare_trajectories(
+            gaze.xy[:min_len, 0],
+            gaze.xy[:min_len, 1],
+            stim_x[-min_len:],
+            stim_y[-min_len:],
+            np.zeros(min_len, dtype=bool),
         )
+        return _liveness_response(decision, gaze.fps)
 
     except HTTPException:
         raise

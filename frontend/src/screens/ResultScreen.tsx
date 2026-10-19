@@ -16,10 +16,10 @@ export default function ResultScreen({ stimulus, result, uploadMs, processingMs,
     // Сервер берёт отсчёты стимула в моменты взгляда и stim[-n:], gaze[:n]:
     // взгляд выровнен по концу стимула. При целом шаге это stim[::step].
     const step = stimulus.fps / result.fps;
-    const n = result.gaze_fit_x.length;
+    const n = result.gaze_x.length;
     const sampled = Math.floor((stimulus.x.length - 1e-9) / step) + 1;
     const offset = sampled - n;
-    const gazeT = result.gaze_fit_x.map((_, i) => (offset + i) / result.fps);
+    const gazeT = result.gaze_x.map((_, i) => (offset + i) / result.fps);
     return { stimT, gazeT };
   }, [stimulus, result]);
 
@@ -34,14 +34,14 @@ export default function ResultScreen({ stimulus, result, uploadMs, processingMs,
           title="x(t)"
           series={[
             { label: "stim_x", t: stimT, v: stimulus.x, color: "#6b7280", width: 1.5 },
-            { label: "gaze_fit_x", t: gazeT, v: result.gaze_fit_x, color: "#2563eb", highlight: result.inlier },
+            { label: "gaze_x", t: gazeT, v: result.gaze_x, color: "#2563eb", highlight: result.inlier },
           ]}
         />
         <LineChart
           title="y(t)"
           series={[
             { label: "stim_y", t: stimT, v: stimulus.y, color: "#6b7280", width: 1.5 },
-            { label: "gaze_fit_y", t: gazeT, v: result.gaze_fit_y, color: "#2563eb", highlight: result.inlier },
+            { label: "gaze_y", t: gazeT, v: result.gaze_y, color: "#2563eb", highlight: result.inlier },
           ]}
         />
         <p className="duration">Загрузка видео заняла {formatDuration(uploadMs)} сек</p>

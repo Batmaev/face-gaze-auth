@@ -55,3 +55,20 @@ def sample_at_fps(ctrl, n_frames: int, stim_fps: float, gaze_fps: float) -> tupl
     # Кадр i показан в момент i / stim_fps и лежит на параметре i / (n_frames - 1).
     u = frame_index / (n_frames - 1)
     return eval_spline(ctrl, u, n_frames)
+
+
+def candidate_splines(n: int, n_frames: int, n_ctrl: int = 6) -> np.ndarray:
+    """N случайных стимулов сразу на частоте взгляда, форма (n, n_frames, 2).
+
+    Тот же кубический сплайн, что у показанного стимула, но сетка сразу из n_frames
+    точек, без прореживания 60 FPS.
+    """
+    if n_frames < 2:
+        raise ValueError("у стимула-кандидата должно быть хотя бы 2 отсчёта")
+    u = np.linspace(0, 1, n_frames)
+    out = np.empty((n, n_frames, 2), dtype=float)
+    rng = np.random.default_rng()
+    for i in range(n):
+        ctrl = rng.uniform(0, 1, (n_ctrl, 2))
+        out[i, :, 0], out[i, :, 1] = eval_spline(ctrl, u, n_frames)
+    return out

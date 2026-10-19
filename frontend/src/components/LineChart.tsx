@@ -1,7 +1,7 @@
 export interface Series {
   label: string;
   t: number[];
-  v: number[];
+  v: (number | null)[];
   color: string;
   width?: number;
   /** Точки, где false, дополнительно помечаются серыми кружками (выбросы). */
@@ -18,7 +18,7 @@ const H = 220;
 const PAD = { left: 36, right: 12, top: 12, bottom: 26 };
 
 export default function LineChart({ title, series }: Props) {
-  const all = series.flatMap((s) => s.v.filter(Number.isFinite));
+  const all = series.flatMap((s) => s.v.filter(isNumber));
   const allT = series.flatMap((s) => s.t);
   const tMin = Math.min(0, ...allT);
   const tMax = Math.max(...allT, tMin + 1e-6);
@@ -36,7 +36,7 @@ export default function LineChart({ title, series }: Props) {
     let d = "";
     let pen = false;
     s.v.forEach((v, i) => {
-      if (!Number.isFinite(v)) {
+      if (!isNumber(v)) {
         pen = false;
         return;
       }
@@ -83,15 +83,19 @@ export default function LineChart({ title, series }: Props) {
           <path key={s.label} d={pathFor(s)} fill="none" stroke={s.color} strokeWidth={s.width ?? 2} vectorEffect="non-scaling-stroke" />
         ))}
         {series.map((s) =>
-          s.highlight?.map((ok, i) =>
-            ok || !Number.isFinite(s.v[i]) ? null : (
-              <circle key={`${s.label}${i}`} cx={sx(s.t[i])} cy={sy(s.v[i])} r={3} className="outlier" />
-            ),
-          ),
+          s.highlight?.map((ok, i) => {
+            const v = s.v[i];
+            if (ok || !isNumber(v)) return null;
+            return <circle key={`${s.label}${i}`} cx={sx(s.t[i])} cy={sy(v)} r={3} className="outlier" />;
+          }),
         )}
       </svg>
     </figure>
   );
+}
+
+function isNumber(v: number | null): v is number {
+  return typeof v === "number" && Number.isFinite(v);
 }
 
 function ticks(min: number, max: number, count: number): number[] {

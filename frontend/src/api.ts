@@ -13,13 +13,15 @@ export interface Stimulus {
 
 export interface LivenessResult {
   is_live: boolean;
+  /** 1 − p, p — конформный p-value. Живой, если score >= 0.96. */
   score: number;
-  gaze_fit_x: number[];
-  gaze_fit_y: number[];
+  /** Взгляд после min-max на сравниваемом окне. null — лица на кадре не было. */
+  gaze_x: (number | null)[];
+  gaze_y: (number | null)[];
+  /** Кадр ближе 0.15 к стимулу по обеим осям. Моргания — false. */
   inlier: boolean[];
-  /** Частота gaze_fit_x / gaze_fit_y / inlier после прореживания видео на сервере. */
+  /** Частота gaze_x / gaze_y / inlier после прореживания видео на сервере. */
   fps: number;
-  lag: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

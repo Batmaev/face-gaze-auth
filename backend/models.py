@@ -31,13 +31,18 @@ class StimulusResponse(BaseModel):
 
 class LivenessResponse(BaseModel):
     is_live: bool = Field(..., example=True)
-    score: float = Field(..., example=0.85)
-    gaze_fit_x: list[float]
-    gaze_fit_y: list[float]
-    inlier: list[bool]
-    fps: float = Field(..., description="Frame rate of gaze_fit_x, gaze_fit_y and inlier", example=15)
-    lag: int = Field(
-        ..., 
-        description="Estimated lag between stimulus and gaze in frames",
-        example=10
+    score: float = Field(
+        ...,
+        description="1 minus the conformal p-value of the shown stimulus among random candidates. is_live is score >= 0.96",
+        example=0.98,
     )
+    gaze_x: list[float | None] = Field(
+        ...,
+        description="Min-max normalized gaze on the compared window, null where the face was missing",
+    )
+    gaze_y: list[float | None]
+    inlier: list[bool] = Field(
+        ...,
+        description="Frame is within 0.15 of the stimulus on both axes after min-max. Blinks are false",
+    )
+    fps: float = Field(..., description="Frame rate of gaze_x, gaze_y and inlier", example=15)
