@@ -22,6 +22,8 @@ _DETECTOR_SIZE = 128
 _LANDMARK_SIZE = 256
 _NUM_LANDMARKS = 478
 _MIN_SCORE = 0.5
+# Сетка больше не отбрасывает кадр по presence. Порог детектора остаётся _MIN_SCORE.
+_MIN_PRESENCE = 0.0
 _MIN_IOU = 0.5
 _RECT_SCALE = 1.5
 
@@ -521,7 +523,7 @@ def _decode_landmarks(raw: np.ndarray, context) -> np.ndarray | None:
     # Граф MediaPipe прогоняет этот выход через сигмоиду. У текущей сети он уже
     # в диапазоне вероятности, повторная сигмоида не должна отбрасывать лицо.
     presence_score = presence if 0.0 <= presence <= 1.0 else float(1 / (1 + np.exp(-np.clip(presence, -100, 100))))
-    if presence_score < _MIN_SCORE:
+    if presence_score < _MIN_PRESENCE:
         return None
     landmarks = values[:1434].reshape(_NUM_LANDMARKS, 3)
     if np.nanmax(np.abs(landmarks[:, :2])) > 2:
