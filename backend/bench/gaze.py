@@ -1,7 +1,7 @@
-"""Замер скорости траектории взгляда по видео.
+"""Замер скорости траектории взгляда по видео. Запускать из backend/:
 
-uv run --no-sync python bench_gaze.py --device cuda --repeat 5 data/0_1.mp4
-fp16 задаётся переменной UNIGAZE_FP16.
+uv run --no-sync python -m bench.gaze --device cuda --repeat 5 data/0_1.mp4
+fp16 задаётся переменной UNIGAZE_FP16, сеть лица — MEDIAPIPE_DEVICE.
 """
 
 from __future__ import annotations

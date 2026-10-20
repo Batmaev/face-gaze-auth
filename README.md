@@ -15,11 +15,6 @@ Caddy сам получит сертификат. Пересобрать оди�
 
 Локально без Docker: `cd backend && uv sync --extra cpu && uv run fastapi dev main.py`, в другом терминале `cd frontend && npm ci && npm run dev` — Vite проксирует `/api` на бекенд (адрес в `frontend/.env.example`).
 
-Переменные окружения бекенда:
-- `TORCH_DEVICE` — устройство для UniGaze, по умолчанию `cuda`, если доступна, иначе `cpu`;
-- `UNIGAZE_FP16=0` — отключить fp16 на CUDA;
-- `MEDIAPIPE_DEVICE` — `cpu`, `gpu` или `auto` (по умолчанию: GPU только при наличии CUDA);
-- `FACE_LANDMARKER_MODEL` — путь к `face_landmarker.task`. В Docker модель уже в образе, без Docker она скачивается в `~/.cache/unified-liveness` при первом запуске.
-- `WEB_CONCURRENCY` — число процессов uvicorn. В compose стоит `2`: на 4 vCPU тестового сервера третий и четвёртый уже делят ядра на декодировании видео.
+`WEB_CONCURRENCY` в `compose.yml` — число процессов uvicorn. Стоит `2`: на 4 vCPU тестового сервера третий и четвёртый уже делят ядра на декодировании видео.
 
-Замеры: `bench_gaze.py` (пайплайн по видео) и `bench_api.py` (нагрузка на `/islive_video`).
+Замеры в `backend/bench/`: `python -m bench.gaze` (пайплайн по видео) и `python -m bench.api` (нагрузка на `/islive_video`), команды в docstring. Для сравнений бекенд читает `TORCH_DEVICE` (`cuda`/`cpu`/`mps`), `UNIGAZE_FP16=0` и `MEDIAPIPE_DEVICE` (`cpu`/`gpu`/`auto`); по умолчанию всё на CUDA, если она есть.

@@ -1,4 +1,5 @@
-const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "/api";
+// /api срезают Caddy в проде и Vite в dev, см. frontend/Caddyfile и vite.config.ts
+const API_URL = "/api";
 
 export interface Stimulus {
   type: "moving-dot";

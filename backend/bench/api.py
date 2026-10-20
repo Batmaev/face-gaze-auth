@@ -1,6 +1,6 @@
-"""Нагрузка на POST /islive_video.
+"""Нагрузка на POST /islive_video. Запускать из backend/:
 
-uv run --no-sync python bench_api.py --url http://localhost:8000 --requests 20 --concurrency 4 \
+uv run --no-sync python -m bench.api --url http://localhost:8000 --requests 20 --concurrency 4 \
     data/f4frjppx5aof/video/261011_203155_875399.mp4
 Стимул берётся из JSON рядом с видео.
 """
