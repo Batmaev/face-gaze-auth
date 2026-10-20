@@ -14,7 +14,6 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import pandas as pd
 from scipy.signal import savgol_filter
 
 import stimulus
@@ -36,6 +35,9 @@ if tuple(corr_model.feature_names_in_) != _FEATURES:
     raise RuntimeError(
         f'corr_model.joblib ждёт {tuple(corr_model.feature_names_in_)}, в коде {_FEATURES}'
     )
+# Порядок признаков проверен; без имён sklearn принимает numpy и не требует DataFrame
+for _, _step in corr_model.steps:
+    _step.__dict__.pop('feature_names_in_', None)
 
 
 @dataclass(frozen=True)
@@ -130,9 +132,17 @@ def _model_scores(features: np.ndarray) -> np.ndarray:
     finite = np.isfinite(features).all(axis=1)
     scores = np.full(features.shape[0], np.nan)
     if finite.any():
-        frame = pd.DataFrame(features[finite], columns=list(_FEATURES))
-        scores[finite] = corr_model.decision_function(frame)
+        scores[finite] = corr_model.decision_function(features[finite])
     return scores
+
+
+def find_blinks(left_eye_blink, right_eye_blink, threshold=0.8, left_pad=5, right_pad=20) -> np.ndarray:
+    """Маска морганий по ARKit blink-коэффициентам: порог на любом глазу, расширенный на соседние кадры."""
+    raw = (np.asarray(left_eye_blink, dtype=float) > threshold) | (np.asarray(right_eye_blink, dtype=float) > threshold)
+    blinks = raw.copy()
+    for i in np.flatnonzero(raw):
+        blinks[max(0, i - left_pad):min(len(raw), i + right_pad)] = True
+    return blinks
 
 
 def _features(gaze: np.ndarray, stims: np.ndarray, blink: np.ndarray) -> np.ndarray:

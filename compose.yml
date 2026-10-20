@@ -9,7 +9,6 @@ services:
       WEB_CONCURRENCY: "2"
     volumes:
       - ./backend:/app
-      # HF_HOME задан в Dockerfile
       - huggingface_cache:/cache/huggingface
     restart: unless-stopped
 

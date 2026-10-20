@@ -12,8 +12,7 @@ import unigaze
 import stimulus
 from models import ArkitLivenessRequest, Stimulus, StimulusResponse, LivenessResponse
 from utils import DATA_DIR, generate_name_from_time
-from trajectory_comparison.fit import find_blinks
-from trajectory_comparison.decide import LivenessDecision, compare_trajectories
+from trajectory_comparison.decide import LivenessDecision, compare_trajectories, find_blinks
 from unigaze_helpers.trajectory import unigaze_gaze_from_video
 from log_decorator import log_handler, stage
 
