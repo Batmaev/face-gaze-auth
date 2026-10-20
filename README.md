@@ -9,13 +9,13 @@
 
 Предусмотрена регистрация пользователей, чтобы данные сохранялись в разные папки.
 
-Запустить: 
-1. Организовать reverse proxy / проброс портов
-2. `docker compose up -d`
+Запустить на сервере с GPU NVIDIA (драйвер не ниже 580 и nvidia-container-toolkit):
+1. Направить DNS домена на сервер и вписать домен в `Caddyfile.deploy` — Caddy сам получит сертификат.
+2. `docker compose -f compose.yml -f compose.gpu.yml -f compose.ports.yml up -d --build`
 
-С GPU NVIDIA: нужны драйвер не ниже 580 и nvidia-container-toolkit, затем
-`docker compose -f compose.yml -f compose.gpu.yml up -d --build`.
-Без Docker: `uv sync --extra gpu` (или `--extra cpu`).
+Пересобирать отдельный сервис той же командой с `--no-deps frontend` или `--no-deps backend` в конце: без `compose.gpu.yml` бекенд останется без GPU, без `compose.ports.yml` фронтенд — без портов и HTTPS.
+
+Без GPU убрать `-f compose.gpu.yml`. Без Docker: `uv sync --extra gpu` (или `--extra cpu`).
 
 Переменные окружения бекенда:
 - `TORCH_DEVICE` — устройство для UniGaze, по умолчанию `cuda`, если доступна, иначе `cpu`;
