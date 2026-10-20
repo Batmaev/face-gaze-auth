@@ -20,14 +20,10 @@ from scipy.signal import savgol_filter
 from stimulus.generate import candidate_splines
 
 
-# N = 99, знаменатель 100: скор равен k/100 и на клиенте выглядит как 0.99, а не 0.990.
-# Порог >= 0.96 — реальный стимул строго лучше хотя бы 96 кандидатов.
-# Конформная оценка доли ложных принятий — не выше 4%.
-N_CANDIDATES = 99
-SCORE_THRESHOLD = 0.96
+N_CANDIDATES = 499
+SCORE_THRESHOLD = 0.98
 
-# Как в обучении corr_model: min-max, порог близости 0.15 по каждой оси,
-# vel_corr — производная Савицкого — Голея без лага, окно 5, степень 2.
+
 INLIER_RADIUS = 0.15
 SAVGOL_WINDOW = 5
 SAVGOL_POLYORDER = 2
