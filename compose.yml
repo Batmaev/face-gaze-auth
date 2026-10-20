@@ -2,27 +2,34 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
     environment:
       HF_HOME: /cache/huggingface
       ROOT_PATH: /api
+      # .pyc не в bind mount, чтобы не мусорить в репозитории на хосте
+      PYTHONPYCACHEPREFIX: /tmp/pycache
       # uvicorn читает это, если fastapi run запущен без --workers
       WEB_CONCURRENCY: "2"
     volumes:
       - ./backend:/app
       - huggingface_cache:/cache/huggingface
-    tmpfs:
-      - /app/__pycache__
-      - /app/routers/__pycache__
-      - /app/liveness/__pycache__
-      - /app/stimulus/__pycache__
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+    environment:
+      # Пусто — Caddy слушает http://:80 без сертификата, см. frontend/Caddyfile
+      DOMAIN: ${DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
     restart: unless-stopped
 
 volumes:
   huggingface_cache:
+  caddy_data:
+  caddy_config:
