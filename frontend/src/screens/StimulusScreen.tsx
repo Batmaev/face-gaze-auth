@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Stimulus } from "../api";
+import type { StimulusResponse } from "../api";
 import { VideoRecorder, type Recording } from "../camera";
 
 export interface Rect {
@@ -19,7 +19,7 @@ export interface StimulusRun {
 }
 
 interface Props {
-  stimulus: Stimulus;
+  stimulus: StimulusResponse;
   stream: MediaStream;
   onFinished: (recording: Recording, run: StimulusRun) => void;
   onError: (message: string) => void;
@@ -73,7 +73,8 @@ export default function StimulusScreen({ stimulus, stream, onFinished, onError }
     let cancelled = false;
     let frame = 0;
     let recorder: VideoRecorder | null = null;
-    const durationMs = (points.length / stimulus.fps) * 1000;
+    const fps = stimulus.stim.fps;
+    const durationMs = (points.length / fps) * 1000;
 
     const timer = window.setTimeout(async () => {
       try {
@@ -104,7 +105,7 @@ export default function StimulusScreen({ stimulus, stream, onFinished, onError }
           }
           return;
         }
-        moveMarker(Math.min(points.length - 1, Math.floor((elapsed / 1000) * stimulus.fps)));
+        moveMarker(Math.min(points.length - 1, Math.floor((elapsed / 1000) * fps)));
         renderedFrames++;
         frame = requestAnimationFrame(tick);
       };
@@ -117,7 +118,7 @@ export default function StimulusScreen({ stimulus, stream, onFinished, onError }
       cancelAnimationFrame(frame);
       recorder?.cancel();
     };
-  }, [points, stimulus.fps, stream, layout]);
+  }, [points, stimulus.stim.fps, stream, layout]);
 
   return (
     <div className="stimulus" ref={rootRef}>

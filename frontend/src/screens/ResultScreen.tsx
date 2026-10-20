@@ -1,9 +1,9 @@
 import { useMemo } from "react";
-import type { LivenessResult, Stimulus } from "../api";
+import type { LivenessResult, StimulusResponse } from "../api";
 import LineChart from "../components/LineChart";
 
 interface Props {
-  stimulus: Stimulus;
+  stimulus: StimulusResponse;
   result: LivenessResult;
   uploadMs: number;
   processingMs: number;
@@ -12,10 +12,10 @@ interface Props {
 
 export default function ResultScreen({ stimulus, result, uploadMs, processingMs, onRetry }: Props) {
   const { stimT, gazeT } = useMemo(() => {
-    const stimT = stimulus.x.map((_, i) => i / stimulus.fps);
+    const stimT = stimulus.x.map((_, i) => i / stimulus.stim.fps);
     // Сервер берёт отсчёты стимула в моменты взгляда и stim[-n:], gaze[:n]:
     // взгляд выровнен по концу стимула. При целом шаге это stim[::step].
-    const step = stimulus.fps / result.fps;
+    const step = stimulus.stim.fps / result.fps;
     const n = result.gaze_x.length;
     const sampled = Math.floor((stimulus.x.length - 1e-9) / step) + 1;
     const offset = sampled - n;

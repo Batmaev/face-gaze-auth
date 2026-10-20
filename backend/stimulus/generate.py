@@ -1,17 +1,8 @@
+"""Сплайновая траектория: кубический сплайн через контрольные точки.
+"""
+
 import numpy as np
 import scipy.interpolate as si
-
-
-def random_spline(n_frames=600, n_ctrl=6) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Случайный сплайн стимула.
-
-    Возвращает кадры (x, y) длины n_frames и контрольные точки ctrl формы (n_ctrl, 2).
-    Точек меньше, чем у представления tck: у кубического сплайна по 6 точкам
-    12 коэффициентов и 10 узлов. По точкам сплайн восстанавливается однозначно.
-    """
-    ctrl = np.random.uniform(0, 1, (n_ctrl, 2))
-    x, y = eval_spline(ctrl, np.linspace(0, 1, n_frames), n_frames)
-    return x, y, ctrl
 
 
 def eval_spline(ctrl, u, n_frames: int) -> tuple[np.ndarray, np.ndarray]:

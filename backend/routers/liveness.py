@@ -2,15 +2,16 @@ import json
 import os
 import time
 
-from fastapi import APIRouter, HTTPException, Body, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.concurrency import run_in_threadpool
 import numpy as np
+from pydantic import TypeAdapter, ValidationError
 import torch
 import unigaze
 
-from models import StimulusResponse, LivenessResponse
-from utils import DATA_DIR, GENERATED_STIMULI, generate_short_id, generate_name_from_time
-from stimulus.generate import eval_spline, random_spline, sample_at_fps
+import stimulus
+from models import ArkitLivenessRequest, Stimulus, StimulusResponse, LivenessResponse
+from utils import DATA_DIR, generate_name_from_time
 from trajectory_comparison.fit import find_blinks
 from trajectory_comparison.decide import LivenessDecision, compare_trajectories
 from unigaze_helpers.trajectory import unigaze_gaze_from_video
@@ -23,8 +24,9 @@ unigaze_model = unigaze.load("unigaze_b16_joint", device=TORCH_DEVICE)
 
 STIM_FPS = 60
 STIM_DURATION_SEC = 5
-N_CTRL_POINTS = 6
-N_FRAMES = STIM_DURATION_SEC * STIM_FPS
+
+# TypeAdapter, а не Stimulus.model_validate_json: продолжит работать, когда Stimulus станет Union
+_stimulus_adapter = TypeAdapter(Stimulus)
 
 router = APIRouter(tags=["Liveness"])
 
@@ -50,124 +52,55 @@ def _liveness_response(decision: LivenessDecision, fps: float) -> LivenessRespon
     )
 
 
-def _parse_ctrl(raw: str | None) -> np.ndarray | None:
-    if raw is None or raw.strip() in ("", "null"):
-        return None
+def _parse_stimulus(raw: str) -> Stimulus:
+    """Объект `stim` из GET /stim, пришедший строкой в multipart-поле."""
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="ctrl must be a JSON array of [x, y]")
-    if data is None:
-        return None
-    return _as_ctrl(data)
+        return _stimulus_adapter.validate_json(raw)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=json.loads(e.json(include_url=False)))
 
 
-def _as_ctrl(data) -> np.ndarray:
-    ctrl = np.asarray(data, dtype=float)
-    if ctrl.ndim != 2 or ctrl.shape[1] != 2 or len(ctrl) < 4 or not np.isfinite(ctrl).all():
-        raise HTTPException(status_code=400, detail="ctrl must be an array of [x, y], at least 4 finite points")
-    return ctrl
-
-
-def _resolve_stimulus(
-    token: str | None,
-    ctrl: np.ndarray | None,
-    stim_x: list[float] | np.ndarray | None,
-    stim_y: list[float] | np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """Кадры на частоте стимула и контрольные точки, если они есть.
-
-    Сначала кэш этого воркера. Если токена нет (другой процесс, истёк TTL),
-    траектория собирается из контрольных точек. Готовые stim_x, stim_y остаются
-    для старых записей, где точек сплайна ещё не было.
-    """
-    if token:
-        stored = GENERATED_STIMULI.get(token)
-        if stored is not None:
-            stim_x, stim_y, ctrl = stored
-            return np.asarray(stim_x, dtype=float), np.asarray(stim_y, dtype=float), np.asarray(ctrl, dtype=float)
-    if ctrl is not None:
-        x, y = eval_spline(ctrl, np.linspace(0, 1, N_FRAMES), N_FRAMES)
-        return x, y, ctrl
-    if stim_x is not None and stim_y is not None:
-        return np.asarray(stim_x, dtype=float), np.asarray(stim_y, dtype=float), None
-    raise HTTPException(status_code=400, detail="Stimulus not found. Send spline control points or a token from this worker.")
-
-
-def _match_gaze_fps(
-    stim_x: np.ndarray,
-    stim_y: np.ndarray,
-    ctrl: np.ndarray | None,
-    gaze_fps: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Отсчёты стимула в те же моменты, что и кадры взгляда."""
+def _sampled_stimulus(stim: Stimulus, gaze_fps: float) -> tuple[np.ndarray, np.ndarray]:
+    """Стимул в моменты кадров взгляда."""
     if not np.isfinite(gaze_fps) or gaze_fps <= 0:
         raise HTTPException(status_code=400, detail=f"Gaze FPS must be positive, got {gaze_fps}")
-    ratio = STIM_FPS / gaze_fps
-    if ratio >= 1 and abs(ratio - round(ratio)) < 1e-6:
-        return stim_x[:: int(round(ratio))], stim_y[:: int(round(ratio))]
-    if ctrl is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Gaze FPS {gaze_fps} does not divide stimulus FPS {STIM_FPS}; spline control points are required",
-        )
-    return sample_at_fps(ctrl, len(stim_x), STIM_FPS, gaze_fps)
+    return stimulus.sample(stim, gaze_fps)
 
 
 @router.get("/stim")
 @log_handler
 async def generate_stimulus() -> StimulusResponse:
-    """Generate random stimulus.
-    Generated (x, y) are guaranteed to be in [0, 1]×[0, 1].
+    """Generate a random stimulus.
+
+    `x`, `y` are the frames to show, in [0, 1]×[0, 1]. `stim` is the compact
+    description to send back with the recording; the server keeps no state,
+    so any instance can check it.
     """
-    stim_x, stim_y, ctrl = random_spline(N_FRAMES, N_CTRL_POINTS)
-
-    token = generate_short_id()
-    GENERATED_STIMULI[token] = (stim_x, stim_y, ctrl)
-
-    return StimulusResponse(
-        type="moving-dot",
-        x=stim_x,
-        y=stim_y,
-        ctrl=ctrl.tolist(),
-        fps=STIM_FPS,
-        duration_sec=STIM_DURATION_SEC,
-        token=token,
-    )
+    stim = stimulus.random_stimulus(STIM_FPS, STIM_DURATION_SEC)
+    x, y = stimulus.frames(stim)
+    return StimulusResponse(stim=stim, x=x.tolist(), y=y.tolist())
 
 
-@router.post(
-    "/islive",
-    response_model=LivenessResponse,
-)
+@router.post("/islive_arkit", response_model=LivenessResponse)
 @log_handler
-async def check_liveness(
-    token: str | None = Body(None, description="Token returned by GET /stim. If this worker does not have it, ctrl is used."),
-    ctrl: list[list[float]] | None = Body(None, description="Spline control points, shape (n, 2)"),
-    stim_x: list[float] | None = Body(None),
-    stim_y: list[float] | None = Body(None),
-    gaze_x: list[float] = Body(...),
-    gaze_y: list[float] = Body(...),
-    left_eye_blink: list[float] = Body(...),
-    right_eye_blink: list[float] = Body(...),
-    fps: float = Body(60)
-) -> LivenessResponse:
-    parsed_ctrl = _as_ctrl(ctrl) if ctrl is not None else None
-    stim_x, stim_y, _parsed_ctrl = _resolve_stimulus(token, parsed_ctrl, stim_x, stim_y)
+async def islive_arkit(body: ArkitLivenessRequest) -> LivenessResponse:
+    """Check liveness of ARKit gaze series. Gaze starts together with the stimulus."""
+    stim_x, stim_y = _sampled_stimulus(body.stim, body.fps)
 
     try:
         min_len = min(
-            len(stim_x), len(stim_y), len(gaze_x), len(gaze_y), len(left_eye_blink), len(right_eye_blink),
+            len(stim_x), len(body.gaze_x), len(body.gaze_y), len(body.left_eye_blink), len(body.right_eye_blink),
         )
-        blink = find_blinks(left_eye_blink[:min_len], right_eye_blink[:min_len])
+        blink = find_blinks(body.left_eye_blink[:min_len], body.right_eye_blink[:min_len])
         decision = await compare_trajectories(
-            gaze_x[:min_len],
-            gaze_y[:min_len],
+            body.gaze_x[:min_len],
+            body.gaze_y[:min_len],
             stim_x[:min_len],
             stim_y[:min_len],
             blink,
+            body.stim,
         )
-        return _liveness_response(decision, fps)
+        return _liveness_response(decision, body.fps)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
@@ -200,14 +133,13 @@ async def upload_csv(
 @log_handler
 async def islive_video(
     user_id: str = Form(...),
-    token: str | None = Form(None, description="Token returned by GET /stim. If this worker does not have it, ctrl is used."),
-    ctrl: str | None = Form(None, description="JSON array of spline control points [[x, y], ...]"),
-    stim_x: list[float] | None = Form(None),
-    stim_y: list[float] | None = Form(None),
+    stim: str = Form(..., description="JSON: the `stim` object from GET /stim"),
     file: UploadFile = File(...),
     metadata: str = Form("{}", description="JSON object with recording metadata"),
 ):
-    """Check liveness of a video"""
+    """Check liveness of a video. The recording may start before the stimulus: gaze is aligned to its end."""
+    parsed_stim = _parse_stimulus(stim)
+
     video_dir = DATA_DIR / user_id / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
 
@@ -225,18 +157,17 @@ async def islive_video(
     write_seconds = time.perf_counter() - started
     stage("write", write_seconds)
 
-    stim_x, stim_y, parsed_ctrl = _resolve_stimulus(token, _parse_ctrl(ctrl), stim_x, stim_y)
-
     try:
         metadata_obj = json.loads(metadata)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="metadata must be a JSON object")
     if not isinstance(metadata_obj, dict):
         raise HTTPException(status_code=400, detail="metadata must be a JSON object")
+    # Описание стимула для повторной проверки и готовые кадры для анализа записи
+    metadata_obj["stim"] = parsed_stim.model_dump()
+    stim_x, stim_y = stimulus.frames(parsed_stim)
     metadata_obj["stim_x"] = stim_x.tolist()
     metadata_obj["stim_y"] = stim_y.tolist()
-    if parsed_ctrl is not None:
-        metadata_obj["ctrl"] = parsed_ctrl.tolist()
 
     started = time.perf_counter()
     with open(videopath.with_suffix(".json"), "w") as f:
@@ -250,15 +181,16 @@ async def islive_video(
         for name, seconds in gaze.seconds.items():
             stage(name, seconds)
 
-        stim_x, stim_y = _match_gaze_fps(stim_x, stim_y, parsed_ctrl, gaze.fps)
+        stim_x, stim_y = _sampled_stimulus(parsed_stim, gaze.fps)
 
-        min_len = min(len(stim_x), len(stim_y), len(gaze.xy))
+        min_len = min(len(stim_x), len(gaze.xy))
         decision = await compare_trajectories(
             gaze.xy[:min_len, 0],
             gaze.xy[:min_len, 1],
             stim_x[-min_len:],
             stim_y[-min_len:],
             np.zeros(min_len, dtype=bool),
+            parsed_stim,
         )
         return _liveness_response(decision, gaze.fps)
 

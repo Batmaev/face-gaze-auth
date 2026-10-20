@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { checkLivenessVideo, getStimulus, type LivenessResult, type Stimulus } from "./api";
+import { checkLivenessVideo, getStimulus, type LivenessResult, type StimulusResponse } from "./api";
 import { extensionFor, openCamera, type Recording } from "./camera";
 import { isMobile, isStandalone } from "./pwa";
 import { isPwaSkipped, loadUser, saveUser, skipPwa, type User } from "./storage";
@@ -16,12 +16,12 @@ type Screen =
   | { name: "register"; canGoBack: boolean }
   | { name: "users"; canGoBack: boolean }
   | { name: "instruction" }
-  | { name: "stimulus"; stimulus: Stimulus }
+  | { name: "stimulus"; stimulus: StimulusResponse }
   | { name: "processing"; stage: "uploading" | "checking"; progress: number }
-  | { name: "result"; stimulus: Stimulus; result: LivenessResult; uploadMs: number; processingMs: number }
+  | { name: "result"; stimulus: StimulusResponse; result: LivenessResult; uploadMs: number; processingMs: number }
   | { name: "error"; message: string };
 
-// Токен стимула живёт на сервере 3 минуты, берём с запасом.
+// Сервер стимулы не хранит, но залежавшийся предзапрошенный стимул лучше заменить свежим.
 const STIMULUS_MAX_AGE_MS = 120_000;
 
 function initialScreen(user: User | null): Screen {
@@ -35,7 +35,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(() => initialScreen(user));
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const prefetched = useRef<{ promise: Promise<Stimulus>; at: number } | null>(null);
+  const prefetched = useRef<{ promise: Promise<StimulusResponse>; at: number } | null>(null);
 
   const cameraPending = useRef(false);
 
@@ -94,7 +94,7 @@ export default function App() {
     }
   };
 
-  const finishTest = async (stimulus: Stimulus, recording: Recording, run: StimulusRun) => {
+  const finishTest = async (stimulus: StimulusResponse, recording: Recording, run: StimulusRun) => {
     const startedAt = performance.now();
     let uploadedAt: number | null = null;
     setScreen({ name: "processing", stage: "uploading", progress: 0 });
@@ -102,8 +102,7 @@ export default function App() {
     try {
       const result = await checkLivenessVideo({
         userId: user!.id,
-        token: stimulus.token,
-        ctrl: stimulus.ctrl,
+        stim: stimulus.stim,
         video: recording.blob,
         filename: `video.${extensionFor(recording.mimeType)}`,
         metadata: {
@@ -113,7 +112,7 @@ export default function App() {
           stimulus_start_delay_ms: run.startedAt - recording.startedAt,
           stimulus_duration_ms: run.finishedAt - run.startedAt,
           stimulus_rendered_frames: run.renderedFrames,
-          stimulus_fps: stimulus.fps,
+          stimulus_fps: stimulus.stim.fps,
           // Все размеры в CSS-пикселях; физические = CSS × device_pixel_ratio.
           stimulus_area: run.area,
           viewport: run.viewport,

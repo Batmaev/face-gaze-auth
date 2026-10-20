@@ -1,15 +1,24 @@
 // /api срезают Caddy в проде и Vite в dev, см. frontend/Caddyfile и vite.config.ts
 const API_URL = "/api";
 
-export interface Stimulus {
-  type: "moving-dot";
+/**
+ * Компактное описание стимула. Сервер стимулы не хранит: этот объект отдаётся
+ * обратно вместе с записью, и любой инстанс восстанавливает по нему траекторию.
+ * Новый способ генерации — новый вариант с другим `type`.
+ */
+export type Stimulus = {
+  type: "spline";
+  /** Контрольные точки сплайна, (n, 2). */
+  ctrl: [number, number][];
   fps: number;
   duration_sec: number;
-  token: string;
+};
+
+export interface StimulusResponse {
+  stim: Stimulus;
+  /** Кадры для показа в [0, 1], на частоте stim.fps. */
   x: number[];
   y: number[];
-  /** Контрольные точки сплайна, (n, 2). Сервер по ним восстановит траекторию, если токена нет в кэше воркера. */
-  ctrl: number[][];
 }
 
 export interface LivenessResult {
@@ -51,15 +60,14 @@ export async function register(name: string): Promise<string> {
   return user_id;
 }
 
-export function getStimulus(): Promise<Stimulus> {
+export function getStimulus(): Promise<StimulusResponse> {
   return request("/stim");
 }
 
 /** XHR вместо fetch: нужен момент окончания отправки и прогресс загрузки. */
 export function checkLivenessVideo(params: {
   userId: string;
-  token: string;
-  ctrl: number[][];
+  stim: Stimulus;
   video: Blob;
   filename: string;
   metadata: Record<string, unknown>;
@@ -68,8 +76,7 @@ export function checkLivenessVideo(params: {
 }): Promise<LivenessResult> {
   const form = new FormData();
   form.append("user_id", params.userId);
-  form.append("token", params.token);
-  form.append("ctrl", JSON.stringify(params.ctrl));
+  form.append("stim", JSON.stringify(params.stim));
   form.append("metadata", JSON.stringify(params.metadata));
   form.append("file", params.video, params.filename);
 

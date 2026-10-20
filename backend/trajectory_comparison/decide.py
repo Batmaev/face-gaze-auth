@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
-from stimulus.generate import candidate_splines
+import stimulus
+from models import Stimulus
 
 
 N_CANDIDATES = 499
@@ -56,19 +57,22 @@ async def compare_trajectories(
     stim_x,
     stim_y,
     blink,
+    stim: Stimulus,
 ) -> LivenessDecision:
     """Сравнивает взгляд с показанным стимулом и со свежими случайными.
 
-    Ряды одной длины. blink — гарантированные пропуски: в corr0 и в доле
+    Ряды одной длины: stim_x, stim_y — показанный стимул уже в моменты кадров
+    взгляда. stim — его описание, по нему генерируются случайные кандидаты
+    того же семейства. blink — гарантированные пропуски: в corr0 и в доле
     близких точек их нет, в скорости окно, задевшее моргание, не учитывается.
 
     score = 1 − p ∈ [0, 1), is_live — score >= 0.96.
     Считается в рабочем потоке: внутри только CPU.
     """
-    return await asyncio.to_thread(_compare_trajectories, gaze_x, gaze_y, stim_x, stim_y, blink)
+    return await asyncio.to_thread(_compare_trajectories, gaze_x, gaze_y, stim_x, stim_y, blink, stim)
 
 
-def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink) -> LivenessDecision:
+def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus) -> LivenessDecision:
     gaze_x = np.asarray(gaze_x, dtype=float).reshape(-1)
     gaze_y = np.asarray(gaze_y, dtype=float).reshape(-1)
     stim_x = np.asarray(stim_x, dtype=float).reshape(-1)
@@ -90,7 +94,7 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink) -> LivenessDeci
         )
 
     started = time.perf_counter()
-    candidates = candidate_splines(N_CANDIDATES, n)
+    candidates = stimulus.candidates(stim, N_CANDIDATES, n)
     generated = time.perf_counter()
 
     stims = np.concatenate((np.column_stack((stim_x, stim_y))[None], candidates), axis=0)

@@ -17,18 +17,17 @@ import httpx
 import numpy as np
 
 
+def _stimulus(metadata: dict) -> dict:
+    """Объект stim из JSON рядом с видео."""
+    if "stim" in metadata:
+        return metadata["stim"]
+    if "ctrl" in metadata:
+        return {"type": "spline", "ctrl": metadata["ctrl"]}
+    raise SystemExit("в JSON нет ни stim, ни ctrl: запись слишком старая для этого API")
+
+
 async def _one(client: httpx.AsyncClient, url: str, video: bytes, stim: dict) -> tuple[float, dict]:
-    data = {
-        "user_id": "bench",
-        # Неизвестный токен: сервер собирает стимул из контрольных точек.
-        # В старых JSON их нет, тогда остаются готовые stim_x и stim_y.
-        "token": "bench",
-    }
-    if "ctrl" in stim:
-        data["ctrl"] = json.dumps(stim["ctrl"])
-    else:
-        data["stim_x"] = [str(value) for value in stim["stim_x"]]
-        data["stim_y"] = [str(value) for value in stim["stim_y"]]
+    data = {"user_id": "bench", "stim": json.dumps(stim)}
     start = time.perf_counter()
     response = await client.post(
         f"{url}/islive_video", data=data, files={"file": ("video.mp4", video, "video/mp4")}
@@ -47,7 +46,7 @@ async def main():
     args = parser.parse_args()
 
     video = args.video.read_bytes()
-    stim = json.loads(args.video.with_suffix(".json").read_text())
+    stim = _stimulus(json.loads(args.video.with_suffix(".json").read_text()))
     semaphore = asyncio.Semaphore(args.concurrency)
 
     async with httpx.AsyncClient(timeout=600) as client:
