@@ -5,6 +5,14 @@ __pycache__
 data
 example
 logs
+# Generated logs, temporary artifacts and local test datasets.
+**/log_*
+**/_log*
+**/*_log*
+**/_tmp_*
+**/*_tmp_*
+**/_data_*
+**/*_data_*
 node_modules
 dist
 .env
