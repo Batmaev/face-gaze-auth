@@ -1,0 +1,7 @@
+{
+  "duration_seconds": 60,
+  "target_rps": [0.01, 0.02, 0.03],
+  "url": "http://localhost:8000",
+  "endpoint": "/stim",
+  "timeout_seconds": 600
+}
