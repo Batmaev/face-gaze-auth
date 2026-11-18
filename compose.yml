@@ -5,7 +5,8 @@ services:
     environment:
       # .pyc не в bind mount, чтобы не мусорить в репозитории на хосте
       PYTHONPYCACHEPREFIX: /tmp/pycache
-      # uvicorn читает это, если fastapi run запущен без --workers
+      # uvicorn читает это, если fastapi run запущен без --workers.
+      # На 4 vCPU третий процесс уже делит ядра с другими на декодировании видео
       WEB_CONCURRENCY: "2"
     volumes:
       - ./backend:/app
