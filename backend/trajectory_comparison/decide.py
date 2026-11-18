@@ -20,8 +20,8 @@ import stimulus
 from models import Stimulus
 
 
-N_CANDIDATES = 499
-SCORE_THRESHOLD = 0.98
+N_CANDIDATES = 3999
+SCORE_THRESHOLD = 0.99
 
 
 INLIER_RADIUS = 0.15
