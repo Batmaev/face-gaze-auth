@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -28,14 +29,40 @@ _MIN_IOU = 0.5
 _RECT_SCALE = 1.5
 
 
+@dataclass(frozen=True)
+class FaceLandmarks:
+    """Лицо одного кадра.
+
+    points — 478 точек в пикселях кадра, None если сетку не посчитали.
+    detector_score — уверенность детектора. Если лицо не прошло порог,
+    это лучший скор по кадру (он ниже порога), bbox при этом None.
+    bbox — ось-параллельный прямоугольник детектора в пикселях кадра:
+    xmin, ymin, xmax, ymax. До расширения под сетку.
+    presence — уверенность сетки, None если сетку не запускали.
+    """
+
+    points: np.ndarray | None
+    detector_score: float | None
+    bbox: tuple[float, float, float, float] | None
+    presence: float | None
+
+
+@dataclass(frozen=True)
+class _CroppedFace:
+    crop: np.ndarray | None
+    context: tuple | None
+    detector_score: float | None
+    bbox: tuple[float, float, float, float] | None
+
+
 def face_landmarks_batch(
     frames_bgr: list[np.ndarray],
     *,
     batch_size: int = 32,
-) -> tuple[list[np.ndarray | None], float, float]:
-    """Точки лица для каждого кадра, в пикселях кадра. None, если лица нет.
+) -> tuple[list[FaceLandmarks], float, float]:
+    """Лицо для каждого кадра.
 
-    Вместе с точками возвращаются секунды детектора и сетки. В детектор входит
+    Вместе с лицами возвращаются секунды детектора и сетки. В детектор входит
     загрузка его сети и кроп: перевод цвета и оба варпа. Сетка — пакетное
     предсказание и разбор точек.
 
@@ -80,52 +107,51 @@ class _Runner:
 
     def landmarks(
         self, frames: list[np.ndarray], batch_size: int
-    ) -> tuple[list[np.ndarray | None], float, float]:
+    ) -> tuple[list[FaceLandmarks], float, float]:
         started = time.perf_counter()
-        crops: list[np.ndarray | None] = []
-        contexts = []
-        for frame in frames:
-            prepared = self._crop(frame)
-            if prepared is None:
-                crops.append(None)
-                contexts.append(None)
-            else:
-                crop, context = prepared
-                crops.append(crop)
-                contexts.append(context)
+        prepared = [self._crop(frame) for frame in frames]
         detector_s = time.perf_counter() - started
 
-        ready = [(index, crop) for index, crop in enumerate(crops) if crop is not None]
-        points: list[np.ndarray | None] = [None] * len(frames)
+        ready = [(index, face.crop) for index, face in enumerate(prepared) if face.crop is not None]
+        faces = [
+            FaceLandmarks(None, face.detector_score, face.bbox, None) for face in prepared
+        ]
         if not ready:
-            return points, detector_s, 0.0
+            return faces, detector_s, 0.0
 
         started = time.perf_counter()
         predicted = self._predict_tflite([crop for _, crop in ready], batch_size)
 
         for row, (index, _) in enumerate(ready):
-            decoded = _decode_landmarks(predicted[row], contexts[index])
-            if decoded is not None:
-                points[index] = decoded
-        return points, detector_s, time.perf_counter() - started
+            points, presence = _decode_landmarks(predicted[row], prepared[index].context)
+            detected = faces[index]
+            faces[index] = FaceLandmarks(points, detected.detector_score, detected.bbox, presence)
+        return faces, detector_s, time.perf_counter() - started
 
-    def _crop(self, frame_bgr: np.ndarray):
+    def _crop(self, frame_bgr: np.ndarray) -> _CroppedFace:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         height, width = rgb.shape[:2]
         roi = _pad_roi(_full_image_roi(width, height), _DETECTOR_SIZE, _DETECTOR_SIZE)
         tensor = _warp(rgb, roi.padded, _DETECTOR_SIZE)
         tensor = (tensor.astype(np.float32) - 127.5) / 127.5
-        boxes, scores = self._detect(tensor)
+        boxes, scores, peak = self._detect(tensor)
         if len(scores) == 0:
-            return None
+            return _CroppedFace(None, None, peak, None)
         best = _best_face(_project_detections(boxes, scores, roi.matrix(width, height)))
         if best is None:
-            return None
+            return _CroppedFace(None, None, peak, None)
+        box, score = best
+        bbox = (
+            float(box[1]) * width,
+            float(box[0]) * height,
+            float(box[3]) * width,
+            float(box[2]) * height,
+        )
         rect = _expanded_rect(best, width, height)
         padded = _pad_roi(rect, _LANDMARK_SIZE, _LANDMARK_SIZE)
         crop = _warp(rgb, padded.padded, _LANDMARK_SIZE)
         crop = crop.astype(np.float32) / 255.0
-        return crop, (padded.padding, rect, width, height)
+        return _CroppedFace(crop, (padded.padding, rect, width, height), float(score), bbox)
 
     def _detect(self, tensor: np.ndarray):
         details = {item["name"]: item for item in self._detector.get_input_details()}
@@ -397,13 +423,15 @@ _ANCHORS = None
 
 
 def _decode_blazeface(regressors: np.ndarray, scores: np.ndarray):
+    """Боксы выше порога, их скоры и лучший скор по всему кадру (может быть ниже порога)."""
     global _ANCHORS
     if _ANCHORS is None:
         _ANCHORS = _anchors()
     probability = 1.0 / (1.0 + np.exp(-np.clip(scores, -60.0, 60.0)))
+    peak = float(probability.max()) if probability.size else None
     keep = probability >= _MIN_SCORE
     if not np.any(keep):
-        return np.zeros((0, 16)), np.zeros(0)
+        return np.zeros((0, 16)), np.zeros(0), peak
     raw = regressors[keep]
     anchors = _ANCHORS[keep]
     probability = probability[keep]
@@ -425,7 +453,7 @@ def _decode_blazeface(regressors: np.ndarray, scores: np.ndarray):
     decoded[:, 1] = xmin
     decoded[:, 2] = ymax
     decoded[:, 3] = xmax
-    return decoded, probability
+    return decoded, probability, peak
 
 
 def _project_detections(boxes: np.ndarray, scores: np.ndarray, matrix: np.ndarray):
@@ -516,7 +544,7 @@ def _normalize_radians(angle: float) -> float:
     return float(angle - 2 * np.pi * np.floor((angle + np.pi) / (2 * np.pi)))
 
 
-def _decode_landmarks(raw: np.ndarray, context) -> np.ndarray | None:
+def _decode_landmarks(raw: np.ndarray, context) -> tuple[np.ndarray | None, float | None]:
     padding, rect, width, height = context
     values = np.asarray(raw, dtype=np.float64).reshape(-1)
     presence = float(values[1434]) if values.size > 1434 else 1.0
@@ -524,7 +552,7 @@ def _decode_landmarks(raw: np.ndarray, context) -> np.ndarray | None:
     # в диапазоне вероятности, повторная сигмоида не должна отбрасывать лицо.
     presence_score = presence if 0.0 <= presence <= 1.0 else float(1 / (1 + np.exp(-np.clip(presence, -100, 100))))
     if presence_score < _MIN_PRESENCE:
-        return None
+        return None, presence_score
     landmarks = values[:1434].reshape(_NUM_LANDMARKS, 3)
     if np.nanmax(np.abs(landmarks[:, :2])) > 2:
         landmarks = landmarks.copy()
@@ -538,7 +566,7 @@ def _decode_landmarks(raw: np.ndarray, context) -> np.ndarray | None:
     matrix = _roi_matrix(rect, width, height)
     image_x = x * matrix[0] + y * matrix[1] + matrix[3]
     image_y = x * matrix[4] + y * matrix[5] + matrix[7]
-    return np.column_stack((image_x * width, image_y * height))
+    return np.column_stack((image_x * width, image_y * height)), presence_score
 
 
 def _landmark_output(interpreter) -> np.ndarray:

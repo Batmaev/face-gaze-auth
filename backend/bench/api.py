@@ -1,7 +1,7 @@
 """Нагрузка на POST /islive_video. Запускать из backend/:
 
 uv run --no-sync python -m bench.api --url http://localhost:8000 --requests 20 --concurrency 4 \
-    data/f4frjppx5aof/video/261011_203155_875399.mp4
+    data/k3f9a2p1/attempts/x7q2mz.mp4
 Стимул берётся из JSON рядом с видео.
 """
 

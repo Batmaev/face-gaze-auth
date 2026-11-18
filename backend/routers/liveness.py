@@ -1,7 +1,11 @@
 import json
 import os
+from datetime import datetime
+from pathlib import Path
+import string
 import time
 
+import aiofiles
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.concurrency import run_in_threadpool
 import numpy as np
@@ -10,11 +14,11 @@ import torch
 import unigaze
 
 import stimulus
-from models import ArkitLivenessRequest, Stimulus, StimulusResponse, LivenessResponse
-from utils import DATA_DIR, generate_name_from_time
-from trajectory_comparison.decide import LivenessDecision, compare_trajectories, find_blinks
-from unigaze_helpers.trajectory import unigaze_gaze_from_video
-from log_decorator import log_handler, stage
+from models import Stimulus, StimulusResponse, LivenessResponse
+from utils import DATA_DIR, USER_ID_MAX_LENGTH, USER_ID_PATTERN
+from trajectory_comparison.decide import LivenessDecision, compare_trajectories
+from unigaze_helpers.trajectory import FrameTrace, GazeTrajectory, unigaze_gaze_from_video
+from log_decorator import format_json_compact_arrays, log_handler, stage
 
 
 TORCH_DEVICE = os.getenv("TORCH_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,6 +27,10 @@ unigaze_model = unigaze.load("unigaze_b16_joint", device=TORCH_DEVICE)
 
 STIM_FPS = 60
 STIM_DURATION_SEC = 5
+ATTEMPT_ID_LENGTH = 6
+# id попытки — секунды от 2026-01-01 UTC в base36. Шести символов хватает до конца 2094 года.
+_ATTEMPT_EPOCH = 1767225600
+_BASE36 = string.digits + string.ascii_lowercase
 
 # TypeAdapter, а не Stimulus.model_validate_json: продолжит работать, когда Stimulus станет Union
 _stimulus_adapter = TypeAdapter(Stimulus)
@@ -30,17 +38,151 @@ _stimulus_adapter = TypeAdapter(Stimulus)
 router = APIRouter(tags=["Liveness"])
 
 
-def _stage(name: str, started: float) -> None:
-    stage(name, time.perf_counter() - started)
-
-
 def _floats(values: np.ndarray) -> list[float | None]:
     return [None if not np.isfinite(value) else float(value) for value in values]
 
 
+def _num(value: float | None) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    return number if np.isfinite(number) else None
+
+
+def _vec(value) -> list[float] | None:
+    if value is None:
+        return None
+    flat = np.asarray(value, dtype=float).reshape(-1)
+    if flat.size == 0 or not np.isfinite(flat).all():
+        return None
+    return [float(item) for item in flat]
+
+
+def _matrix(value: np.ndarray | None) -> list[list[float]] | None:
+    if value is None:
+        return None
+    matrix = np.asarray(value, dtype=float)
+    if matrix.ndim != 2 or not np.isfinite(matrix).all():
+        return None
+    return matrix.tolist()
+
+
+def _frame_record(trace: FrameTrace) -> dict:
+    """Кадр без пустых полей: пропуск легче читать, чем пачку null."""
+    record: dict = {"status": trace.status}
+    fields = {
+        "xy": _vec(trace.xy),
+        "ear": _num(trace.ear),
+        "ear_left": _num(trace.ear_left),
+        "ear_right": _num(trace.ear_right),
+        "unigaze_pitchyaw": _vec(trace.unigaze_pitchyaw),
+        "detector_score": _num(trace.detector_score),
+        "presence": _num(trace.presence),
+        "bbox": _vec(trace.bbox),
+        "rotation": _matrix(trace.rotation),
+        "origin": _vec(trace.origin),
+        "rvec": _vec(trace.rvec),
+        "tvec": _vec(trace.tvec),
+        "head_pitch": _num(trace.head_pitch),
+        "head_yaw": _num(trace.head_yaw),
+    }
+    record.update({key: value for key, value in fields.items() if value is not None})
+    return record
+
+
+def _processing_record(gaze: GazeTrajectory) -> dict:
+    return {
+        "fps": gaze.fps,
+        "source_fps": gaze.source_fps,
+        "stride": gaze.stride,
+        # unigaze_pitchyaw и head_pitch/head_yaw — радианы. xy — плоскость камеры до min-max.
+        # bbox — пиксели кадра, xmin ymin xmax ymax. rotation — 3×3 в СК камеры кропа.
+        "frames": [_frame_record(trace) for trace in gaze.frames],
+    }
+
+
+def _decision_record(
+    decision: LivenessDecision,
+    stim_x: np.ndarray,
+    stim_y: np.ndarray,
+) -> dict:
+    compared = int(decision.gaze_x.shape[0])
+    return {
+        "is_live": decision.is_live,
+        "score": decision.score,
+        "raw_logit": decision.raw_logit,
+        "features": decision.features,
+        # Взгляд и стимул сравниваются с первого кадра, хвост длиннее этого числа отброшен.
+        "compared_frames": compared,
+        "stim_x": stim_x[:compared].tolist(),
+        "stim_y": stim_y[:compared].tolist(),
+        "gaze_x": _floats(decision.gaze_x),
+        "gaze_y": _floats(decision.gaze_y),
+        "inlier": decision.inlier.tolist(),
+    }
+
+
+def _video_ext(filename: str | None) -> str:
+    if not filename or "." not in filename:
+        return ".mp4"
+    ext = filename.rsplit(".", 1)[1].lower()
+    if ext.isascii() and ext.isalnum() and 1 <= len(ext) <= 4:
+        return f".{ext}"
+    return ".mp4"
+
+
+def _base36(value: int, width: int) -> str:
+    digits = []
+    for _ in range(width):
+        value, rest = divmod(value, 36)
+        digits.append(_BASE36[rest])
+    return "".join(reversed(digits))
+
+
+def _allocate_attempt(directory: Path, ext: str) -> tuple[str, Path, Path]:
+    """Короткий возрастающий id попытки: `attempts/<id>.webm` и `attempts/<id>.json`.
+
+    Ширина постоянная, а цифры в ASCII идут раньше букв, поэтому сортировка
+    по имени совпадает с порядком создания. Пустой json создаётся с O_EXCL:
+    если секунда занята, берётся следующая.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    seconds = int(time.time()) - _ATTEMPT_EPOCH
+    while True:
+        attempt_id = _base36(seconds, ATTEMPT_ID_LENGTH)
+        json_path = directory / f"{attempt_id}.json"
+        try:
+            fd = os.open(json_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            seconds += 1
+            continue
+        os.close(fd)
+        return attempt_id, directory / f"{attempt_id}{ext}", json_path
+
+
+async def _write_bytes(path: Path, content: bytes) -> None:
+    async with aiofiles.open(path, "wb") as f:
+        await f.write(content)
+
+
+async def _write_record(path: Path, record: dict) -> None:
+    async with aiofiles.open(path, "w", encoding="utf-8") as f:
+        await f.write(format_json_compact_arrays(record))
+
+
+def _error_text(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        return detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _mark(timings: dict[str, float], name: str, seconds: float) -> None:
+    timings[name] = seconds
+    stage(name, seconds)
+
+
 def _liveness_response(decision: LivenessDecision, fps: float) -> LivenessResponse:
-    for name, seconds in decision.seconds.items():
-        stage(name, seconds)
     return LivenessResponse(
         is_live=decision.is_live,
         score=decision.score,
@@ -80,120 +222,84 @@ async def generate_stimulus() -> StimulusResponse:
     return StimulusResponse(stim=stim, x=x.tolist(), y=y.tolist())
 
 
-@router.post("/islive_arkit", response_model=LivenessResponse)
-@log_handler
-async def islive_arkit(body: ArkitLivenessRequest) -> LivenessResponse:
-    """Check liveness of ARKit gaze series. Gaze starts together with the stimulus."""
-    stim_x, stim_y = _sampled_stimulus(body.stim, body.fps)
-
-    try:
-        min_len = min(
-            len(stim_x), len(body.gaze_x), len(body.gaze_y), len(body.left_eye_blink), len(body.right_eye_blink),
-        )
-        blink = find_blinks(body.left_eye_blink[:min_len], body.right_eye_blink[:min_len])
-        decision = await compare_trajectories(
-            body.gaze_x[:min_len],
-            body.gaze_y[:min_len],
-            stim_x[:min_len],
-            stim_y[:min_len],
-            blink,
-            body.stim,
-        )
-        return _liveness_response(decision, body.fps)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-
-
-@router.post("/csv")
-@log_handler
-async def upload_csv(
-    user_id: str = Form(...),
-    file: UploadFile = File(...),
-):
-    """Upload a CSV with raw ARKit data"""
-    csv_dir = DATA_DIR / user_id / "csv"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-
-    ext = ".csv"
-    if file.filename and "." in file.filename:
-        ext = "." + file.filename.rsplit(".", 1)[1]
-
-    filename = f"{generate_name_from_time()}{ext}"
-    filepath = csv_dir / filename
-
-    content = await file.read()
-    filepath.write_bytes(content)
-
-    return {"message": "CSV uploaded successfully"}
-
-
 @router.post("/islive_video")
 @log_handler
 async def islive_video(
-    user_id: str = Form(...),
+    user_id: str = Form(..., pattern=USER_ID_PATTERN, max_length=USER_ID_MAX_LENGTH, description="ASCII letters and digits"),
     stim: str = Form(..., description="JSON: the `stim` object from GET /stim"),
     file: UploadFile = File(...),
     metadata: str = Form("{}", description="JSON object with recording metadata"),
 ):
-    """Check liveness of a video. The recording may start before the stimulus: gaze is aligned to its end."""
+    """Check liveness of a video. Recording and stimulus start together; extra frames at the end are dropped.
+
+    The recording is stored at `data/<user_id>/attempts/<id>.<ext>`. The sidecar
+    `<id>.json` keeps client metadata, the stimulus, and the intermediate values
+    of the pipeline, so a failed attempt can be inspected without the video.
+    """
     parsed_stim = _parse_stimulus(stim)
-
-    video_dir = DATA_DIR / user_id / "video"
-    video_dir.mkdir(parents=True, exist_ok=True)
-
-    ext = ".mp4"
-    if file.filename and "." in file.filename:
-        ext = "." + file.filename.rsplit(".", 1)[1]
-
-    videopath = video_dir / (generate_name_from_time() + ext)
-
-    started = time.perf_counter()
-    content = await file.read()
-    _stage("read", started)
-    started = time.perf_counter()
-    videopath.write_bytes(content)
-    write_seconds = time.perf_counter() - started
-    stage("write", write_seconds)
-
     try:
         metadata_obj = json.loads(metadata)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="metadata must be a JSON object")
     if not isinstance(metadata_obj, dict):
         raise HTTPException(status_code=400, detail="metadata must be a JSON object")
-    # Описание стимула для повторной проверки и готовые кадры для анализа записи
-    metadata_obj["stim"] = parsed_stim.model_dump()
-    stim_x, stim_y = stimulus.frames(parsed_stim)
-    metadata_obj["stim_x"] = stim_x.tolist()
-    metadata_obj["stim_y"] = stim_y.tolist()
 
+    shown_x, shown_y = stimulus.frames(parsed_stim)
+    attempt_id, videopath, json_path = _allocate_attempt(DATA_DIR / user_id / "attempts", _video_ext(file.filename))
+    record = {
+        **metadata_obj,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "user_id": user_id,
+        "attempt_id": attempt_id,
+        "file": videopath.name,
+        "stim": parsed_stim.model_dump(),
+        "stim_x": shown_x.tolist(),
+        "stim_y": shown_y.tolist(),
+    }
+
+    timings: dict[str, float] = {}
     started = time.perf_counter()
-    with open(videopath.with_suffix(".json"), "w") as f:
-        json.dump(metadata_obj, f, ensure_ascii=False, indent=2)
-    stage("write", write_seconds + time.perf_counter() - started)
+    content = await file.read()
+    _mark(timings, "read", time.perf_counter() - started)
+    started = time.perf_counter()
+    await _write_bytes(videopath, content)
+    await _write_record(json_path, record)
+    _mark(timings, "write", time.perf_counter() - started)
 
     try:
         gaze = await run_in_threadpool(
             unigaze_gaze_from_video, videopath, unigaze_model, target_fps=15
         )
         for name, seconds in gaze.seconds.items():
-            stage(name, seconds)
+            _mark(timings, name, seconds)
 
         stim_x, stim_y = _sampled_stimulus(parsed_stim, gaze.fps)
-
-        min_len = min(len(stim_x), len(gaze.xy))
+        # Фронтенд запускает стимул по событию start у MediaRecorder и останавливает
+        # запись после последнего кадра стимула: лишние кадры бывают только в хвосте.
+        n = min(len(stim_x), len(gaze.xy))
         decision = await compare_trajectories(
-            gaze.xy[:min_len, 0],
-            gaze.xy[:min_len, 1],
-            stim_x[-min_len:],
-            stim_y[-min_len:],
-            np.zeros(min_len, dtype=bool),
+            gaze.xy[:n, 0],
+            gaze.xy[:n, 1],
+            stim_x[:n],
+            stim_y[:n],
+            np.zeros(n, dtype=bool),
             parsed_stim,
         )
+        for name, seconds in decision.seconds.items():
+            _mark(timings, name, seconds)
+        record["seconds"] = {name: round(value, 4) for name, value in timings.items()}
+        record["processing"] = _processing_record(gaze)
+        record["decision"] = _decision_record(decision, stim_x, stim_y)
+        await _write_record(json_path, record)
         return _liveness_response(decision, gaze.fps)
 
-    except HTTPException:
+    except HTTPException as exc:
+        record["error"] = _error_text(exc)
+        record["seconds"] = {name: round(value, 4) for name, value in timings.items()}
+        await _write_record(json_path, record)
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    except Exception as exc:
+        record["error"] = _error_text(exc)
+        record["seconds"] = {name: round(value, 4) for name, value in timings.items()}
+        await _write_record(json_path, record)
+        raise HTTPException(status_code=500, detail=f"Processing error: {exc}")

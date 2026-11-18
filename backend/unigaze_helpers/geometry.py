@@ -136,31 +136,47 @@ def normalize_face(image: np.ndarray, center: np.ndarray, rvec: np.ndarray, came
     return normalized, rotation, head_norm
 
 
+def _one_eye(landmarks: np.ndarray, index: tuple[int, ...]) -> float:
+    eye = landmarks[list(index)]
+    vertical = np.linalg.norm(eye[1] - eye[5]) + np.linalg.norm(eye[2] - eye[4])
+    horizontal = np.linalg.norm(eye[0] - eye[3])
+    if horizontal < 1e-6:
+        return 0.0
+    return float(vertical / (2.0 * horizontal))
+
+
+def eye_aspect_ratios(
+    landmarks: np.ndarray,
+    left: tuple[int, ...],
+    right: tuple[int, ...],
+) -> tuple[float, float]:
+    """EAR левого и правого глаза. Ниже примерно 0.2 глаз закрыт.
+
+    left и right — шесть индексов в порядке EAR: внешний угол, верх, верх,
+    внутренний угол, низ, низ. «Левый» в `_MP_LEFT_EAR` — глаз человека,
+    на кадре он справа. UniGaze моргания не считает.
+    """
+    return _one_eye(landmarks, left), _one_eye(landmarks, right)
+
+
 def eye_aspect_ratio(
     landmarks: np.ndarray,
     left: tuple[int, ...],
     right: tuple[int, ...],
 ) -> float:
-    """Меньший из двух глаз. Ниже примерно 0.2 глаз закрыт. UniGaze это не считает.
+    """Меньший из двух глаз. См. eye_aspect_ratios."""
+    return min(eye_aspect_ratios(landmarks, left, right))
 
-    left и right — шесть индексов в порядке EAR: внешний угол, верх, верх,
-    внутренний угол, низ, низ.
-    """
 
-    def one(index: tuple[int, ...]) -> float:
-        eye = landmarks[list(index)]
-        vertical = np.linalg.norm(eye[1] - eye[5]) + np.linalg.norm(eye[2] - eye[4])
-        horizontal = np.linalg.norm(eye[0] - eye[3])
-        if horizontal < 1e-6:
-            return 0.0
-        return float(vertical / (2.0 * horizontal))
-
-    return min(one(left), one(right))
+def head_angles(head_norm: np.ndarray) -> tuple[float, float]:
+    """pitch, yaw в радианах. Те же формулы, что у отсечения позы."""
+    pitch = float(np.arcsin(np.clip(head_norm[1, 2], -1.0, 1.0)))
+    yaw = float(np.arctan2(head_norm[0, 2], head_norm[2, 2]))
+    return pitch, yaw
 
 
 def head_pose_rejected(head_norm: np.ndarray) -> bool:
-    pitch = np.arcsin(np.clip(head_norm[1, 2], -1.0, 1.0))
-    yaw = np.arctan2(head_norm[0, 2], head_norm[2, 2])
+    pitch, yaw = head_angles(head_norm)
     return float(np.hypot(pitch, yaw)) > MAX_HEAD_RAD
 
 

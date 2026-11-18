@@ -355,7 +355,7 @@ def main() -> None:
         default=Path(__file__).parent / "_data_perf_video",
         help="Video file or directory; each request randomly selects a video with JSON sidecar",
     )
-    parser.add_argument("--user-id", default="perf-test")
+    parser.add_argument("--user-id", default="perftest")
     parser.add_argument("--duration", type=float, required=True, help="Arrival window per RPS profile, seconds")
     parser.add_argument("--concurrency", type=int, required=True, help="Maximum in-flight video requests")
     parser.add_argument("--rps", type=float, nargs="+", required=True, help="One or more target request rates")

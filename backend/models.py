@@ -51,16 +51,6 @@ class StimulusResponse(BaseModel):
 
 # --- Liveness Models ---
 
-class ArkitLivenessRequest(BaseModel):
-    stim: Stimulus
-    gaze_x: list[float]
-    gaze_y: list[float]
-    left_eye_blink: list[float]
-    right_eye_blink: list[float]
-    fps: float = Field(60, gt=0, description="Frame rate of the gaze series")
-
-
-
 class LivenessResponse(BaseModel):
     is_live: bool = Field(..., example=True)
     score: float = Field(

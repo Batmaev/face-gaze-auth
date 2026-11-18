@@ -4,7 +4,7 @@ import math
 from fastapi import APIRouter, Form
 
 from models import RegisterResponse
-from utils import DATA_DIR, generate_short_id
+from utils import DATA_DIR, USER_ID_MAX_LENGTH, USER_ID_PATTERN, generate_short_id
 from log_decorator import log_handler
 
 
@@ -19,7 +19,12 @@ def user_dir(user_id: str) -> Path:
 @log_handler
 async def register(
     name: str = Form("Anonymous", description="User's name, defaults to 'Anonymous'"),
-    user_id: str | None = Form(None, description="Optional user ID; if not provided, a random 12-character ID will be generated and returned. If ID is already used, the data will be overwritten."),
+    user_id: str | None = Form(
+        None,
+        pattern=USER_ID_PATTERN,
+        max_length=USER_ID_MAX_LENGTH,
+        description="Optional user ID, ASCII letters and digits; if not provided, a random 8-character ID will be generated and returned. If ID is already used, the data will be overwritten.",
+    ),
 ) -> RegisterResponse:
     """Register a new user."""
     person_id = user_id if user_id else generate_short_id()
@@ -43,9 +48,15 @@ async def get_users() -> dict[str, str]:
         if (d / "name.txt").exists():
             user_id = d.name
             name = (d / "name.txt").read_text()
-            last_video_time = (d / 'video').stat().st_mtime if (d / 'video').exists() else math.inf
-            last_csv_time = (d / 'csv').stat().st_mtime if (d / 'csv').exists() else math.inf
-            last_time = max(last_video_time, last_csv_time)
+            # video и csv — каталоги записей до переименования в attempts.
+            last_time = max(
+                (
+                    (d / sub).stat().st_mtime
+                    for sub in ("attempts", "video", "csv")
+                    if (d / sub).exists()
+                ),
+                default=math.inf,
+            )
 
             id_name_last_time.append({
                 "user_id": user_id,

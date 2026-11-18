@@ -29,9 +29,10 @@ from geometry import (
     crop_face,
     dummy_camera,
     estimate_head_pose,
-    eye_aspect_ratio,
+    eye_aspect_ratios,
     face_center_camera,
     gaze_in_camera,
+    head_angles,
     head_pose_rejected,
     normalize_face,
 )
@@ -51,6 +52,48 @@ _PREDICT_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
 
 
+@dataclass
+class FrameTrace:
+    """Один оставленный кадр. Числа, которых не было, остаются None.
+
+    status:
+    no_face — детектор не нашёл лицо;
+    mesh — лицо было, сетка его не отдала;
+    crop — кроп лица выродился;
+    pose — solvePnP не сошёлся;
+    normalize — не собралась матрица варпа;
+    head — поза больше 80°;
+    ray — луч взгляда параллелен плоскости камеры;
+    ok — точка взгляда посчитана.
+    xy — точка на плоскости камеры до min-max, в осях стимула.
+    ear — меньший EAR двух глаз. ear_left и ear_right — по глазам,
+    «левый» — глаз человека, на кадре он справа.
+    unigaze_pitchyaw — выход UniGaze в радианах, взгляд в СК нормализованного лица.
+    detector_score, presence — уверенности детектора и сетки.
+    bbox — xmin, ymin, xmax, ymax детектора в пикселях кадра.
+    rotation — матрица 3×3, которой взгляд возвращается в СК камеры кропа.
+    origin — центр лица в СК камеры кропа.
+    rvec, tvec — поза головы solvePnP.
+    head_pitch, head_yaw — радианы, те же углы, что сравниваются с порогом.
+    """
+
+    status: str
+    xy: np.ndarray | None = None
+    ear: float | None = None
+    ear_left: float | None = None
+    ear_right: float | None = None
+    unigaze_pitchyaw: np.ndarray | None = None
+    detector_score: float | None = None
+    presence: float | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    rotation: np.ndarray | None = None
+    origin: np.ndarray | None = None
+    rvec: np.ndarray | None = None
+    tvec: np.ndarray | None = None
+    head_pitch: float | None = None
+    head_yaw: float | None = None
+
+
 @dataclass(frozen=True)
 class GazeTrajectory:
     """Один ряд на кадр видео, в том же порядке.
@@ -61,6 +104,8 @@ class GazeTrajectory:
     ear: степень открытости глаз, меньший из двух. Около 0.2 и ниже — моргание.
     UniGaze сам моргания не помечает. NaN, если лица на кадре нет.
     fps: частота оставленных кадров после целого прореживания.
+    source_fps: частота контейнера, stride: шаг прореживания.
+    frames: те же кадры, что xy, с промежуточными величинами.
     seconds: длительности этапов в секундах: decode, detector, mesh, prepare,
     unigaze и, если предсказание было, geometry. detector — кроп и детектор
     лица, mesh — сетка.
@@ -70,6 +115,9 @@ class GazeTrajectory:
     ear: np.ndarray
     fps: float
     seconds: dict[str, float] = field(default_factory=dict)
+    source_fps: float = 0.0
+    stride: int = 1
+    frames: tuple[FrameTrace, ...] = ()
 
 
 def _sample_stride(source_fps: float, target_fps: float | None) -> tuple[int, float]:
@@ -111,10 +159,9 @@ def unigaze_gaze_from_video(
     if not capture.isOpened():
         raise FileNotFoundError(f"не удалось открыть видео: {video}")
 
-    xy_rows: list[np.ndarray] = []
-    ear_rows: list[float] = []
     images = []
-    samples = []
+    pending: list[int] = []
+    traces: list[FrameTrace] = []
     seconds: dict[str, float] = {}
 
     try:
@@ -125,53 +172,41 @@ def unigaze_gaze_from_video(
         started = time.perf_counter()
         frames = _kept_frames(capture, stride)
         seconds["decode"] = time.perf_counter() - started
-        stored, seconds["detector"], seconds["mesh"] = _detect_faces(frames, batch_size)
-        reader = _StoredLandmarks(stored)
+        faces, seconds["detector"], seconds["mesh"] = _detect_faces(frames, batch_size)
         started = time.perf_counter()
-        for frame in frames:
-            frame_index = len(xy_rows)
-            xy_rows.append(np.full(2, np.nan, dtype=np.float64))
-            ear_rows.append(np.nan)
-            prepared = _prepare_frame(reader, frame, 0)
-            if prepared is not None:
-                ear_score, sample = prepared
-                ear_rows[frame_index] = ear_score
-                if sample is not None:
-                    image, rotation, origin = sample
-                    images.append(image)
-                    samples.append((frame_index, rotation, origin))
+        for frame, face in zip(frames, faces):
+            trace, image = _prepare_frame(face, frame)
+            traces.append(trace)
+            if image is not None:
+                images.append(image)
+                pending.append(len(traces) - 1)
         seconds["prepare"] = time.perf_counter() - started
         del frames
 
-        if not images:
-            return GazeTrajectory(
-                xy=np.vstack(xy_rows) if xy_rows else np.zeros((0, 2)),
-                ear=np.asarray(ear_rows, dtype=np.float64),
-                fps=fps,
-                seconds=seconds,
-            )
-
-        device = next(model.parameters()).device
-        model.eval()
-        # Параллельные вызовы torch на CPU делят одни ядра и тормозят в десятки раз.
-        started = time.perf_counter()
-        with _PREDICT_LOCK:
-            pitchyaw = _predict(model, images, batch_size, device, torch)
-        seconds["unigaze"] = time.perf_counter() - started
+        if images:
+            device = next(model.parameters()).device
+            model.eval()
+            # Параллельные вызовы torch на CPU делят одни ядра и тормозят в десятки раз.
+            started = time.perf_counter()
+            with _PREDICT_LOCK:
+                pitchyaw = _predict(model, images, batch_size, device, torch)
+            seconds["unigaze"] = time.perf_counter() - started
+            started = time.perf_counter()
+            _apply_gaze(traces, pending, pitchyaw)
+            seconds["geometry"] = time.perf_counter() - started
     finally:
         capture.release()
 
-    xy = np.vstack(xy_rows)
-    started = time.perf_counter()
-    for row, (frame_index, rotation, origin) in enumerate(samples):
-        gaze = gaze_in_camera(pitchyaw[row], rotation)
-        hit = camera_plane_hit(origin, gaze)
-        if hit is not None:
-            # x: кадр не зеркальный, право экрана слева на изображении.
-            # y: и в кадре, и в стимуле ось смотрит вниз.
-            xy[frame_index] = (-hit[0], hit[1])
-    seconds["geometry"] = time.perf_counter() - started
-    return GazeTrajectory(xy=xy, ear=np.asarray(ear_rows, dtype=np.float64), fps=fps, seconds=seconds)
+    xy, ear = _trajectory_arrays(traces)
+    return GazeTrajectory(
+        xy=xy,
+        ear=ear,
+        fps=fps,
+        seconds=seconds,
+        source_fps=raw_fps,
+        stride=stride,
+        frames=tuple(traces),
+    )
 
 
 def _kept_frames(capture, stride: int) -> list[np.ndarray]:
@@ -197,43 +232,76 @@ def _detect_faces(frames: list[np.ndarray], batch_size: int):
     return face_landmarks_batch(frames, batch_size=batch_size)
 
 
-class _StoredLandmarks:
-    def __init__(self, points: list[np.ndarray | None]):
-        self._points = points
-        self._index = 0
+def _apply_gaze(traces: list[FrameTrace], pending: list[int], pitchyaw: np.ndarray) -> None:
+    for row, frame_index in enumerate(pending):
+        trace = traces[frame_index]
+        gaze_py = np.asarray(pitchyaw[row], dtype=np.float64).reshape(2)
+        trace.unigaze_pitchyaw = gaze_py
+        gaze = gaze_in_camera(gaze_py, trace.rotation)
+        hit = camera_plane_hit(trace.origin, gaze)
+        if hit is None or not np.isfinite(hit).all():
+            trace.status = "ray"
+            continue
+        trace.status = "ok"
+        # x: кадр не зеркальный, право экрана слева на изображении.
+        # y: и в кадре, и в стимуле ось смотрит вниз.
+        trace.xy = np.array((-float(hit[0]), float(hit[1])), dtype=np.float64)
 
-    def find(self, frame: np.ndarray, timestamp_ms: int):
-        del frame, timestamp_ms
-        points = self._points[self._index]
-        self._index += 1
-        if points is None:
-            return None
-        return points, eye_aspect_ratio(points, _MP_LEFT_EAR, _MP_RIGHT_EAR)
+
+def _trajectory_arrays(traces: list[FrameTrace]) -> tuple[np.ndarray, np.ndarray]:
+    xy = np.full((len(traces), 2), np.nan, dtype=np.float64)
+    ear = np.full(len(traces), np.nan, dtype=np.float64)
+    for index, trace in enumerate(traces):
+        if trace.xy is not None:
+            xy[index] = trace.xy
+        if trace.ear is not None:
+            ear[index] = trace.ear
+    return xy, ear
 
 
-def _prepare_frame(reader, frame: np.ndarray, timestamp_ms: int):
-    found = reader.find(frame, timestamp_ms)
-    if found is None:
-        return None
+def _prepare_frame(face, frame: np.ndarray) -> tuple[FrameTrace, np.ndarray | None]:
+    """След кадра и картинка для UniGaze, если до сети дошли."""
+    trace = FrameTrace(
+        status="no_face",
+        detector_score=face.detector_score,
+        presence=face.presence,
+        bbox=face.bbox,
+    )
+    if face.points is None:
+        if face.bbox is not None:
+            trace.status = "mesh"
+        return trace, None
 
-    landmarks, ear = found
-    cropped = crop_face(frame, landmarks)
+    trace.ear_left, trace.ear_right = eye_aspect_ratios(face.points, _MP_LEFT_EAR, _MP_RIGHT_EAR)
+    trace.ear = min(trace.ear_left, trace.ear_right)
+    cropped = crop_face(frame, face.points)
     if cropped is None:
-        return ear, None
+        trace.status = "crop"
+        return trace, None
     crop, shifted = cropped
     points = shifted[list(_MP_POINTS)]
     camera, distortion = dummy_camera(crop)
     pose = estimate_head_pose(points, camera, distortion)
     if pose is None:
-        return ear, None
+        trace.status = "pose"
+        return trace, None
     rvec, tvec = pose
+    trace.rvec = np.asarray(rvec, dtype=np.float64).reshape(3)
+    trace.tvec = np.asarray(tvec, dtype=np.float64).reshape(3)
     rotation_matrix = cv2.Rodrigues(rvec)[0]
     origin = face_center_camera(rotation_matrix, tvec)
+    trace.origin = origin.reshape(3)
     normalized = normalize_face(crop, origin, rvec, camera)
-    if normalized is None or head_pose_rejected(normalized[2]):
-        return ear, None
-    image, rotation, _head_norm = normalized
-    return ear, (image, rotation, origin)
+    if normalized is None:
+        trace.status = "normalize"
+        return trace, None
+    image, rotation, head_norm = normalized
+    trace.rotation = rotation
+    trace.head_pitch, trace.head_yaw = head_angles(head_norm)
+    if head_pose_rejected(head_norm):
+        trace.status = "head"
+        return trace, None
+    return trace, image
 
 
 def _predict(model, images, batch_size: int, device, torch) -> np.ndarray:

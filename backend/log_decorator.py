@@ -86,7 +86,7 @@ def _is_primitive(value: Any) -> bool:
     return isinstance(value, (int, float, bool, type(None)))
 
 
-def _format_json_compact_arrays(obj: Any, indent: str = "") -> str:
+def format_json_compact_arrays(obj: Any, indent: str = "") -> str:
     """Форматирует JSON с компактными массивами примитивов."""
     if isinstance(obj, dict):
         if not obj:
@@ -95,7 +95,7 @@ def _format_json_compact_arrays(obj: Any, indent: str = "") -> str:
         new_indent = indent + "  "
         for key, value in obj.items():
             key_str = json.dumps(key, ensure_ascii=False)
-            value_str = _format_json_compact_arrays(value, new_indent)
+            value_str = format_json_compact_arrays(value, new_indent)
             items.append(f"{new_indent}{key_str}: {value_str}")
         return "{\n" + ",\n".join(items) + "\n" + indent + "}"
     elif isinstance(obj, (list, tuple)):
@@ -106,7 +106,7 @@ def _format_json_compact_arrays(obj: Any, indent: str = "") -> str:
         items = []
         new_indent = indent + "  "
         for item in obj:
-            items.append(new_indent + _format_json_compact_arrays(item, new_indent))
+            items.append(new_indent + format_json_compact_arrays(item, new_indent))
         return "[\n" + ",\n".join(items) + "\n" + indent + "]"
     else:
         return json.dumps(obj, ensure_ascii=False)
@@ -116,7 +116,7 @@ async def _write_log(log_entry: dict):
     """Записывает лог в файл асинхронно."""
     date_str = datetime.now().strftime("%Y%m%d")
     log_file = LOG_DIR / f"handler_{date_str}.log"
-    log_line = _format_json_compact_arrays(log_entry)
+    log_line = format_json_compact_arrays(log_entry)
     log_line = f"\n{'='*80}\n{log_line}\n{'='*80}\n"
     async with aiofiles.open(log_file, "a", encoding="utf-8") as f:
         await f.write(log_line)

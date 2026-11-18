@@ -51,6 +51,11 @@ class LivenessDecision:
     inlier: np.ndarray
     # Секунды: candidates — генерация N стимулов, rank — признаки, модель и ранг.
     seconds: dict[str, float]
+    # Признаки показанного стимула. None, если ряд короче окна Савицкого — Голея.
+    # Значение признака None, если оно не посчиталось.
+    features: dict[str, float | None] | None
+    # Логарифм шансов логистической регрессии на показанном стимуле, до конформного скора.
+    raw_logit: float | None
 
 
 async def compare_trajectories(
@@ -93,6 +98,8 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus)
             gaze_y=gaze[:, 1],
             inlier=np.zeros(n, dtype=bool),
             seconds={'candidates': 0.0, 'rank': 0.0},
+            features=None,
+            raw_logit=None,
         )
 
     started = time.perf_counter()
@@ -103,8 +110,8 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus)
     stims[:, :, 0] = _minmax_axis(stims[:, :, 0])
     stims[:, :, 1] = _minmax_axis(stims[:, :, 1])
 
-    features = _features(gaze, stims, blink)
-    model_scores = _model_scores(features)
+    feature_rows = _features(gaze, stims, blink)
+    model_scores = _model_scores(feature_rows)
     score = _conformal_score(model_scores[0], model_scores[1:])
     return LivenessDecision(
         score=score,
@@ -113,6 +120,8 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus)
         gaze_y=gaze[:, 1],
         inlier=_inlier_mask(gaze, stims[0], blink),
         seconds={'candidates': generated - started, 'rank': time.perf_counter() - generated},
+        features={name: _finite(feature_rows[0, index]) for index, name in enumerate(_FEATURES)},
+        raw_logit=_finite(model_scores[0]),
     )
 
 
@@ -136,13 +145,9 @@ def _model_scores(features: np.ndarray) -> np.ndarray:
     return scores
 
 
-def find_blinks(left_eye_blink, right_eye_blink, threshold=0.8, left_pad=5, right_pad=20) -> np.ndarray:
-    """Маска морганий по ARKit blink-коэффициентам: порог на любом глазу, расширенный на соседние кадры."""
-    raw = (np.asarray(left_eye_blink, dtype=float) > threshold) | (np.asarray(right_eye_blink, dtype=float) > threshold)
-    blinks = raw.copy()
-    for i in np.flatnonzero(raw):
-        blinks[max(0, i - left_pad):min(len(raw), i + right_pad)] = True
-    return blinks
+def _finite(value: float) -> float | None:
+    number = float(value)
+    return number if np.isfinite(number) else None
 
 
 def _features(gaze: np.ndarray, stims: np.ndarray, blink: np.ndarray) -> np.ndarray:
