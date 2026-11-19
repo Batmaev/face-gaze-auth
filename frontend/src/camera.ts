@@ -39,6 +39,17 @@ export async function openCamera(): Promise<MediaStream> {
   return stream;
 }
 
+const BASE_BITRATE = 8_000_000;
+const BASE_PIXELS = 1280 * 720;
+const BASE_FPS = 30;
+
+/** Битрейт, при котором сжатие почти незаметно; с ростом fps растёт медленнее линейного — соседние кадры похожи. */
+export function videoBitrate(track: MediaStreamTrack | undefined): number {
+  const { width = 1280, height = 720, frameRate = BASE_FPS } = track?.getSettings() ?? {};
+  const bitrate = BASE_BITRATE * ((width * height) / BASE_PIXELS) * (frameRate / BASE_FPS) ** 0.6;
+  return Math.round(Math.min(Math.max(bitrate, 4_000_000), 25_000_000));
+}
+
 export interface CameraFrame {
   captureTime: number | null;
   presentationTime: number;
@@ -47,6 +58,7 @@ export interface CameraFrame {
 export interface Recording {
   blob: Blob;
   mimeType: string;
+  videoBitsPerSecond: number;
   startedAt: number;
   stoppedAt: number;
   cameraFrames: CameraFrame[] | null;
@@ -92,7 +104,8 @@ export class VideoRecorder {
 
   constructor(private stream: MediaStream) {
     const mimeType = pickMimeType();
-    this.recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : undefined);
+    const videoBitsPerSecond = videoBitrate(stream.getVideoTracks()[0]);
+    this.recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond } : { videoBitsPerSecond });
     this.recorder.ondataavailable = (event) => {
       if (event.data.size > 0) this.chunks.push(event.data);
     };
@@ -104,6 +117,7 @@ export class VideoRecorder {
         resolve({
           blob: new Blob(this.chunks, { type }),
           mimeType: type,
+          videoBitsPerSecond: this.recorder.videoBitsPerSecond,
           startedAt: this.startedAt,
           stoppedAt,
           cameraFrames: this.frames?.frames ?? null,

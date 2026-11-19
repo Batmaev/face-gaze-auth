@@ -108,6 +108,7 @@ export default function App() {
         metadata: {
           mime_type: recording.mimeType,
           video_size_bytes: recording.blob.size,
+          video_bits_per_second: recording.videoBitsPerSecond,
           recording_duration_ms: recording.stoppedAt - recording.startedAt,
           stimulus_start_delay_ms: run.startedAt - recording.startedAt,
           stimulus_duration_ms: run.finishedAt - run.startedAt,
