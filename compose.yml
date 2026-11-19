@@ -8,6 +8,14 @@ services:
       # uvicorn читает это, если fastapi run запущен без --workers.
       # На 4 vCPU третий процесс уже делит ядра с другими на декодировании видео
       WEB_CONCURRENCY: "2"
+      # Пусто — cuda, если она есть, иначе cpu
+      TORCH_DEVICE: ${TORCH_DEVICE:-}
+      # 0 — fp32. На CUDA по умолчанию fp16
+      UNIGAZE_FP16: ${UNIGAZE_FP16:-1}
+      # 0 — через сети только оставленные кадры, 1 — ещё и прореженные
+      UNIGAZE_ALL_FRAMES: ${UNIGAZE_ALL_FRAMES:-1}
+      # cpu, gpu или auto: GPU только при CUDA
+      MEDIAPIPE_DEVICE: ${MEDIAPIPE_DEVICE:-auto}
     volumes:
       - ./backend:/app
       - huggingface_cache:/cache/huggingface
