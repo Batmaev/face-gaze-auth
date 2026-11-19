@@ -151,24 +151,17 @@ class GazeTrajectory:
     frames: tuple[FrameTrace, ...] = ()
 
 
-def _sample_stride(
-    source_fps: float, target_fps: float | None, *, round_fps: bool = True
-) -> tuple[int, float]:
+def _sample_stride(source_fps: float, target_fps: float | None) -> tuple[int, float]:
     """Шаг прореживания и fps оставленных кадров.
 
-    round_fps округляет номинальный fps до целого: контейнер часто пишет 30.03
-    вместо 30. Средний fps по меткам времени кадров не округляется, иначе
-    к концу ролика накапливается сдвиг относительно стимула.
+    Номинальный fps округляется до целого: контейнер часто пишет 30.03 вместо 30,
+    а средний fps по меткам времени выходит 29.86. С целым fps стимул 60 FPS
+    прореживается целым шагом, и сравниваются те кадры, что были показаны.
     Берётся наибольший целый шаг, при котором частота не ниже target_fps.
     Кадры остаются через равные промежутки. Если ролик и так медленнее цели,
     остаётся каждый кадр.
     """
-    if source_fps <= 0:
-        nominal: float = 30
-    elif round_fps:
-        nominal = int(round(source_fps)) or 30
-    else:
-        nominal = source_fps
+    nominal = (int(round(source_fps)) or 30) if source_fps > 0 else 30
     if target_fps is None:
         return 1, float(nominal)
     if target_fps <= 0:
@@ -220,7 +213,7 @@ def unigaze_gaze_from_video(
         frame_size = (int(frames[0].shape[1]), int(frames[0].shape[0])) if frames else None
 
         source_fps = _fps_from_timestamps(timestamps_ms) if fps_from_timestamps else container_fps
-        stride, fps = _sample_stride(source_fps, target_fps, round_fps=not fps_from_timestamps)
+        stride, fps = _sample_stride(source_fps, target_fps)
         if not all_frames and decode_stride != stride:
             frames = [frame for frame, index in zip(frames, indices) if _kept(index, stride)]
             indices = [index for index in indices if _kept(index, stride)]
