@@ -6,7 +6,7 @@ import string
 import time
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from fastapi.concurrency import run_in_threadpool
 import numpy as np
 from pydantic import TypeAdapter, ValidationError
@@ -27,6 +27,12 @@ unigaze_model = unigaze.load("unigaze_b16_joint", device=TORCH_DEVICE)
 
 STIM_FPS = 60
 STIM_DURATION_SEC = 5
+STIM_N_CTRL = 6
+STIM_SCORE_THRESHOLD = 0.99
+# После неудачной попытки: стимул длиннее и сложнее, порог строже.
+RETRY_DURATION_SEC = 8
+RETRY_N_CTRL = 10
+RETRY_SCORE_THRESHOLD = 0.9975
 ATTEMPT_ID_LENGTH = 6
 # id попытки — секунды от 2026-01-01 UTC в base36. Шести символов хватает до конца 2094 года.
 _ATTEMPT_EPOCH = 1767225600
@@ -133,6 +139,7 @@ def _decision_record(
     return {
         "is_live": decision.is_live,
         "score": decision.score,
+        "score_threshold": decision.score_threshold,
         "raw_logit": decision.raw_logit,
         "features": decision.features,
         # Взгляд и стимул сравниваются с первого кадра, хвост длиннее этого числа отброшен.
@@ -234,14 +241,19 @@ def _sampled_stimulus(stim: Stimulus, gaze_fps: float) -> tuple[np.ndarray, np.n
 
 @router.get("/stim")
 @log_handler
-async def generate_stimulus() -> StimulusResponse:
+async def generate_stimulus(
+    retry: bool = Query(False, description="After a failed attempt: longer, more complex stimulus and a stricter threshold"),
+) -> StimulusResponse:
     """Generate a random stimulus.
 
     `x`, `y` are the frames to show, in [0, 1]×[0, 1]. `stim` is the compact
     description to send back with the recording; the server keeps no state,
     so any instance can check it.
     """
-    stim = stimulus.random_stimulus(STIM_FPS, STIM_DURATION_SEC)
+    if retry:
+        stim = stimulus.random_stimulus(STIM_FPS, RETRY_DURATION_SEC, RETRY_N_CTRL)
+    else:
+        stim = stimulus.random_stimulus(STIM_FPS, STIM_DURATION_SEC, STIM_N_CTRL)
     x, y = stimulus.frames(stim)
     return StimulusResponse(stim=stim, x=x.tolist(), y=y.tolist())
 
@@ -253,6 +265,7 @@ async def islive_video(
     stim: str = Form(..., description="JSON: the `stim` object from GET /stim"),
     file: UploadFile = File(...),
     metadata: str = Form("{}", description="JSON object with recording metadata"),
+    retry: bool = Form(False, description="The stimulus came from GET /stim?retry=true: stricter threshold"),
 ):
     """Check liveness of a video. Recording and stimulus start together; extra frames at the end are dropped.
 
@@ -276,6 +289,7 @@ async def islive_video(
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "user_id": user_id,
         "attempt_id": attempt_id,
+        "retry": retry,
         "file": videopath.name,
         "stim": parsed_stim.model_dump(),
         "stim_x": shown_x.tolist(),
@@ -309,6 +323,7 @@ async def islive_video(
             stim_y[:n],
             np.zeros(n, dtype=bool),
             parsed_stim,
+            RETRY_SCORE_THRESHOLD if retry else STIM_SCORE_THRESHOLD,
         )
         for name, seconds in decision.seconds.items():
             _mark(timings, name, seconds)

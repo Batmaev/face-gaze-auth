@@ -21,7 +21,6 @@ from models import Stimulus
 
 
 N_CANDIDATES = 3999
-SCORE_THRESHOLD = 0.99
 
 
 INLIER_RADIUS = 0.15
@@ -43,6 +42,7 @@ for _, _step in corr_model.steps:
 @dataclass(frozen=True)
 class LivenessDecision:
     score: float
+    score_threshold: float
     is_live: bool
     # Взгляд после min-max на сравниваемом окне. NaN, где лица не было.
     gaze_x: np.ndarray
@@ -65,6 +65,7 @@ async def compare_trajectories(
     stim_y,
     blink,
     stim: Stimulus,
+    score_threshold: float,
 ) -> LivenessDecision:
     """Сравнивает взгляд с показанным стимулом и со свежими случайными.
 
@@ -73,13 +74,17 @@ async def compare_trajectories(
     того же семейства. blink — гарантированные пропуски: в corr0 и в доле
     близких точек их нет, в скорости окно, задевшее моргание, не учитывается.
 
-    score = 1 − p ∈ [0, 1), is_live — score >= 0.96.
+    score = 1 − p ∈ [0, 1), is_live — score >= score_threshold.
     Считается в рабочем потоке: внутри только CPU.
     """
-    return await asyncio.to_thread(_compare_trajectories, gaze_x, gaze_y, stim_x, stim_y, blink, stim)
+    return await asyncio.to_thread(
+        _compare_trajectories, gaze_x, gaze_y, stim_x, stim_y, blink, stim, score_threshold
+    )
 
 
-def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus) -> LivenessDecision:
+def _compare_trajectories(
+    gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus, score_threshold: float
+) -> LivenessDecision:
     gaze_x = np.asarray(gaze_x, dtype=float).reshape(-1)
     gaze_y = np.asarray(gaze_y, dtype=float).reshape(-1)
     stim_x = np.asarray(stim_x, dtype=float).reshape(-1)
@@ -93,6 +98,7 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus)
     if n < SAVGOL_WINDOW:
         return LivenessDecision(
             score=0.0,
+            score_threshold=score_threshold,
             is_live=False,
             gaze_x=gaze[:, 0],
             gaze_y=gaze[:, 1],
@@ -115,7 +121,8 @@ def _compare_trajectories(gaze_x, gaze_y, stim_x, stim_y, blink, stim: Stimulus)
     score = _conformal_score(model_scores[0], model_scores[1:])
     return LivenessDecision(
         score=score,
-        is_live=score >= SCORE_THRESHOLD,
+        score_threshold=score_threshold,
+        is_live=score >= score_threshold,
         gaze_x=gaze[:, 0],
         gaze_y=gaze[:, 1],
         inlier=_inlier_mask(gaze, stims[0], blink),

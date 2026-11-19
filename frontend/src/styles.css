@@ -121,6 +121,10 @@ button:disabled {
   color: #fff;
 }
 
+.primary.danger {
+  background: var(--fail);
+}
+
 .secondary {
   background: var(--surface);
   border: 1px solid var(--border);

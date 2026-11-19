@@ -4,13 +4,14 @@ import LineChart from "../components/LineChart";
 
 interface Props {
   stimulus: StimulusResponse;
+  retry: boolean;
   result: LivenessResult;
   uploadMs: number;
   processingMs: number;
   onRetry: () => void;
 }
 
-export default function ResultScreen({ stimulus, result, uploadMs, processingMs, onRetry }: Props) {
+export default function ResultScreen({ stimulus, retry, result, uploadMs, processingMs, onRetry }: Props) {
   const { stimT, gazeT } = useMemo(() => {
     const stimT = stimulus.x.map((_, i) => i / stimulus.stim.fps);
     // Сервер берёт отсчёты стимула в моменты взгляда и stim[-n:], gaze[:n]:
@@ -27,7 +28,7 @@ export default function ResultScreen({ stimulus, result, uploadMs, processingMs,
     <div className="screen">
       <div className="content scroll">
         <div className={result.is_live ? "verdict ok" : "verdict fail"}>
-          <div className="score">{result.score.toFixed(2)}</div>
+          <div className="score">{result.score.toFixed(retry ? 3 : 2)}</div>
           <div>Витальность {result.is_live ? "подтверждена" : "не подтверждена"}</div>
         </div>
         <LineChart
@@ -48,7 +49,7 @@ export default function ResultScreen({ stimulus, result, uploadMs, processingMs,
         <p className="duration">Обработка заняла {formatDuration(processingMs)} сек</p>
       </div>
       <div className="footer">
-        <button className="primary" onClick={onRetry}>
+        <button className={result.is_live ? "primary" : "primary danger"} onClick={onRetry}>
           Ещё раз
         </button>
       </div>

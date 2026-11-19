@@ -11,11 +11,8 @@ from models import SplineStimulus, Stimulus
 from stimulus.generate import candidate_splines, eval_spline, sample_at_fps
 
 
-N_CTRL_POINTS = 6
-
-
-def random_stimulus(fps: float, duration_sec: float) -> Stimulus:
-    ctrl = np.random.uniform(0, 1, (N_CTRL_POINTS, 2))
+def random_stimulus(fps: float, duration_sec: float, n_ctrl: int) -> Stimulus:
+    ctrl = np.random.uniform(0, 1, (n_ctrl, 2))
     return SplineStimulus(ctrl=ctrl.tolist(), fps=fps, duration_sec=duration_sec)
 
 

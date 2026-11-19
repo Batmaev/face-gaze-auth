@@ -23,7 +23,7 @@ export interface StimulusResponse {
 
 export interface LivenessResult {
   is_live: boolean;
-  /** 1 − p, p — конформный p-value. Живой, если score >= 0.96. */
+  /** 1 − p, p — конформный p-value. Живой, если score >= 0.99, при повторной попытке >= 0.999. */
   score: number;
   /** Взгляд после min-max на сравниваемом окне. null — лица на кадре не было. */
   gaze_x: (number | null)[];
@@ -62,14 +62,17 @@ export async function register(name: string): Promise<string> {
   return user_id;
 }
 
-export function getStimulus(): Promise<StimulusResponse> {
-  return request("/stim");
+/** retry — после неудачной попытки: стимул длиннее и сложнее, порог строже. */
+export function getStimulus(retry: boolean): Promise<StimulusResponse> {
+  return request(retry ? "/stim?retry=true" : "/stim");
 }
 
 /** XHR вместо fetch: нужен момент окончания отправки и прогресс загрузки. */
 export function checkLivenessVideo(params: {
   userId: string;
   stim: Stimulus;
+  /** Стимул получен с retry: сервер проверяет по строгому порогу. */
+  retry: boolean;
   video: Blob;
   filename: string;
   metadata: Record<string, unknown>;
@@ -79,6 +82,7 @@ export function checkLivenessVideo(params: {
   const form = new FormData();
   form.append("user_id", params.userId);
   form.append("stim", JSON.stringify(params.stim));
+  form.append("retry", String(params.retry));
   form.append("metadata", JSON.stringify(params.metadata));
   form.append("file", params.video, params.filename);
 

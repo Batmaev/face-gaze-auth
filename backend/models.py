@@ -55,7 +55,7 @@ class LivenessResponse(BaseModel):
     is_live: bool = Field(..., example=True)
     score: float = Field(
         ...,
-        description="1 minus the conformal p-value of the shown stimulus among random candidates. is_live is score >= 0.96",
+        description="1 minus the conformal p-value of the shown stimulus among random candidates. is_live is score >= 0.99, or more for a retry",
         example=0.98,
     )
     gaze_x: list[float | None] = Field(

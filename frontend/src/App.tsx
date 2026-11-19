@@ -16,9 +16,9 @@ type Screen =
   | { name: "register"; canGoBack: boolean }
   | { name: "users"; canGoBack: boolean }
   | { name: "instruction" }
-  | { name: "stimulus"; stimulus: StimulusResponse }
+  | { name: "stimulus"; stimulus: StimulusResponse; retry: boolean }
   | { name: "processing"; stage: "uploading" | "checking"; progress: number }
-  | { name: "result"; stimulus: StimulusResponse; result: LivenessResult; uploadMs: number; processingMs: number }
+  | { name: "result"; stimulus: StimulusResponse; retry: boolean; result: LivenessResult; uploadMs: number; processingMs: number }
   | { name: "error"; message: string };
 
 // Сервер стимулы не хранит, но залежавшийся предзапрошенный стимул лучше заменить свежим.
@@ -35,7 +35,9 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(() => initialScreen(user));
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const prefetched = useRef<{ promise: Promise<StimulusResponse>; at: number } | null>(null);
+  // Последняя проверка не подтвердила витальность: следующий стимул строже.
+  const [retry, setRetry] = useState(false);
+  const prefetched = useRef<{ promise: Promise<StimulusResponse>; at: number; retry: boolean } | null>(null);
 
   const cameraPending = useRef(false);
 
@@ -63,13 +65,13 @@ export default function App() {
 
   const prefetchStimulus = useCallback(() => {
     const cached = prefetched.current;
-    if (cached && Date.now() - cached.at < STIMULUS_MAX_AGE_MS) return;
-    const promise = getStimulus();
+    if (cached && cached.retry === retry && Date.now() - cached.at < STIMULUS_MAX_AGE_MS) return;
+    const promise = getStimulus(retry);
     promise.catch(() => {
       if (prefetched.current?.promise === promise) prefetched.current = null;
     });
-    prefetched.current = { promise, at: Date.now() };
-  }, []);
+    prefetched.current = { promise, at: Date.now(), retry };
+  }, [retry]);
 
   useEffect(() => {
     if (screen.name === "instruction") prefetchStimulus();
@@ -88,13 +90,13 @@ export default function App() {
     try {
       const stimulus = await pending.promise;
       if (isMobile() && !isStandalone()) document.documentElement.requestFullscreen?.().catch(() => {});
-      setScreen({ name: "stimulus", stimulus });
+      setScreen({ name: "stimulus", stimulus, retry: pending.retry });
     } catch (error) {
       setScreen({ name: "error", message: `Не удалось получить стимул: ${errorText(error)}` });
     }
   };
 
-  const finishTest = async (stimulus: StimulusResponse, recording: Recording, run: StimulusRun) => {
+  const finishTest = async (stimulus: StimulusResponse, retry: boolean, recording: Recording, run: StimulusRun) => {
     const startedAt = performance.now();
     setScreen({ name: "processing", stage: "uploading", progress: 0 });
     const track = stream?.getVideoTracks()[0];
@@ -102,6 +104,7 @@ export default function App() {
       const result = await checkLivenessVideo({
         userId: user!.id,
         stim: stimulus.stim,
+        retry,
         video: recording.blob,
         filename: `video.${extensionFor(recording.mimeType)}`,
         metadata: {
@@ -147,9 +150,11 @@ export default function App() {
       });
       const totalMs = performance.now() - startedAt;
       const processingMs = result.processing_ms;
+      setRetry(!result.is_live);
       setScreen({
         name: "result",
         stimulus,
+        retry,
         result,
         uploadMs: Math.max(0, totalMs - processingMs),
         processingMs,
@@ -201,7 +206,7 @@ export default function App() {
         <StimulusScreen
           stimulus={screen.stimulus}
           stream={stream!}
-          onFinished={(recording, run) => finishTest(screen.stimulus, recording, run)}
+          onFinished={(recording, run) => finishTest(screen.stimulus, screen.retry, recording, run)}
           onError={(message) => setScreen({ name: "error", message })}
         />
       );
@@ -211,6 +216,7 @@ export default function App() {
       return (
         <ResultScreen
           stimulus={screen.stimulus}
+          retry={screen.retry}
           result={screen.result}
           uploadMs={screen.uploadMs}
           processingMs={screen.processingMs}
