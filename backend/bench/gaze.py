@@ -1,7 +1,8 @@
 """Замер скорости траектории взгляда по видео. Запускать из backend/:
 
 uv run --no-sync python -m bench.gaze --device cuda --repeat 5 data/0_1.mp4
-fp16 задаётся переменной UNIGAZE_FP16, сеть лица — MEDIAPIPE_DEVICE.
+fp16 задаётся переменной UNIGAZE_FP16, сеть лица — MEDIAPIPE_DEVICE,
+прогон прореженных кадров — UNIGAZE_ALL_FRAMES.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def _run(video: Path, model, args) -> tuple[dict, np.ndarray]:
         trajectory._detect_faces = original_detect
         trajectory._prepare_frame = original_prepare
         trajectory._predict = original_predict
-    frames = len(gaze.xy)
+    frames = len(gaze.frames)
     return {
         "total_s": total,
         "prepare_s": detect.seconds + prepare.seconds,

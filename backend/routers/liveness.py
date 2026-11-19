@@ -67,9 +67,15 @@ def _matrix(value: np.ndarray | None) -> list[list[float]] | None:
     return matrix.tolist()
 
 
-def _frame_record(trace: FrameTrace) -> dict:
+def _frame_record(trace: FrameTrace, gaze: GazeTrajectory, compared_frames: int) -> dict:
     """Кадр без пустых полей: пропуск легче читать, чем пачку null."""
-    record: dict = {"status": trace.status}
+    record: dict = {
+        "index": trace.index,
+        "t_ms": round(float(gaze.timestamps_ms[trace.index]), 3),
+        # Используется ли кадр для сравнения после прореживания и отбрасывания хвоста.
+        "compared": trace.row is not None and trace.row < compared_frames,
+        "status": trace.status,
+    }
     fields = {
         "xy": _vec(trace.xy),
         "ear": _num(trace.ear),
@@ -90,14 +96,18 @@ def _frame_record(trace: FrameTrace) -> dict:
     return record
 
 
-def _processing_record(gaze: GazeTrajectory) -> dict:
+def _processing_record(gaze: GazeTrajectory, compared_frames: int) -> dict:
     return {
         "fps": gaze.fps,
         "source_fps": gaze.source_fps,
         "stride": gaze.stride,
+        "fps_from_timestamps": gaze.fps_from_timestamps,
+        # Метки времени всех кадров ролика, в том числе не прогнанных через сети.
+        # Индекс — index кадра в frames.
+        "timestamps_ms": [round(float(value), 3) for value in gaze.timestamps_ms],
         # unigaze_pitchyaw и head_pitch/head_yaw — радианы. xy — плоскость камеры до min-max.
         # bbox — пиксели кадра, xmin ymin xmax ymax. rotation — 3×3 в СК камеры кропа.
-        "frames": [_frame_record(trace) for trace in gaze.frames],
+        "frames": [_frame_record(trace, gaze, compared_frames) for trace in gaze.frames],
     }
 
 
@@ -288,7 +298,7 @@ async def islive_video(
         for name, seconds in decision.seconds.items():
             _mark(timings, name, seconds)
         record["seconds"] = {name: round(value, 4) for name, value in timings.items()}
-        record["processing"] = _processing_record(gaze)
+        record["processing"] = _processing_record(gaze, n)
         record["decision"] = _decision_record(decision, stim_x, stim_y)
         await _write_record(json_path, record)
         return _liveness_response(decision, gaze.fps)

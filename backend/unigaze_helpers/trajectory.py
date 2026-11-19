@@ -51,11 +51,17 @@ _MODEL_SHA256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9f
 _PREDICT_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
 
+# Без средней частоты в контейнере (WebM из MediaRecorder) OpenCV отдаёт
+# единицу времени дорожки, обычно 1000. Камеры быстрее не снимают.
+_MAX_CONTAINER_FPS = 240.0
+
 
 @dataclass
 class FrameTrace:
-    """Один оставленный кадр. Числа, которых не было, остаются None.
+    """Один прогнанный через сети кадр. Числа, которых не было, остаются None.
 
+    index — номер кадра в ролике.
+    row — строка кадра в xy и ear траектории. None, если кадр отброшен прореживанием.
     status:
     no_face — детектор не нашёл лицо;
     mesh — лицо было, сетка его не отдала;
@@ -78,6 +84,8 @@ class FrameTrace:
     """
 
     status: str
+    index: int = -1
+    row: int | None = None
     xy: np.ndarray | None = None
     ear: float | None = None
     ear_left: float | None = None
@@ -96,7 +104,7 @@ class FrameTrace:
 
 @dataclass(frozen=True)
 class GazeTrajectory:
-    """Один ряд на кадр видео, в том же порядке.
+    """Один ряд xy и ear на оставленный кадр, в порядке кадров.
 
     xy: точка на плоскости камеры, в осях стимула. x растёт вправо по экрану,
     y — вниз. Масштаб произвольный.
@@ -104,8 +112,14 @@ class GazeTrajectory:
     ear: степень открытости глаз, меньший из двух. Около 0.2 и ниже — моргание.
     UniGaze сам моргания не помечает. NaN, если лица на кадре нет.
     fps: частота оставленных кадров после целого прореживания.
-    source_fps: частота контейнера, stride: шаг прореживания.
-    frames: те же кадры, что xy, с промежуточными величинами.
+    source_fps: частота ролика, stride: шаг прореживания.
+    fps_from_timestamps: в контейнере не было правдоподобной частоты,
+    source_fps посчитан по меткам времени кадров.
+    timestamps_ms: метки времени всех кадров ролика, в мс.
+    frames: прогнанные через сети кадры с промежуточными величинами. Все кадры
+    ролика, если UNIGAZE_ALL_FRAMES не 0, иначе только оставленные. Оставленные
+    — те, у кого row не None. Оставленные
+    — те, у кого row не None.
     seconds: длительности этапов в секундах: decode, detector, mesh, prepare,
     unigaze и, если предсказание было, geometry. detector — кроп и детектор
     лица, mesh — сетка.
@@ -117,20 +131,29 @@ class GazeTrajectory:
     seconds: dict[str, float] = field(default_factory=dict)
     source_fps: float = 0.0
     stride: int = 1
+    fps_from_timestamps: bool = False
+    timestamps_ms: np.ndarray = field(default_factory=lambda: np.empty(0))
     frames: tuple[FrameTrace, ...] = ()
 
 
-def _sample_stride(source_fps: float, target_fps: float | None) -> tuple[int, float]:
+def _sample_stride(
+    source_fps: float, target_fps: float | None, *, round_fps: bool = True
+) -> tuple[int, float]:
     """Шаг прореживания и fps оставленных кадров.
 
-    Номинальный fps округляется до целого: контейнер часто пишет 30.03 вместо 30.
+    round_fps округляет номинальный fps до целого: контейнер часто пишет 30.03
+    вместо 30. Средний fps по меткам времени кадров не округляется, иначе
+    к концу ролика накапливается сдвиг относительно стимула.
     Берётся наибольший целый шаг, при котором частота не ниже target_fps.
     Кадры остаются через равные промежутки. Если ролик и так медленнее цели,
     остаётся каждый кадр.
     """
-    nominal = int(round(source_fps)) if source_fps > 0 else 30
-    if nominal <= 0:
-        nominal = 30
+    if source_fps <= 0:
+        nominal: float = 30
+    elif round_fps:
+        nominal = int(round(source_fps)) or 30
+    else:
+        nominal = source_fps
     if target_fps is None:
         return 1, float(nominal)
     if target_fps <= 0:
@@ -154,6 +177,8 @@ def unigaze_gaze_from_video(
 
     target_fps — нижняя граница частоты оставленных кадров. Берётся каждый N-й
     кадр, N целое, так что итог не медленнее target_fps. None оставляет все кадры.
+    UNIGAZE_ALL_FRAMES, если не 0, прогоняет через сети и прореженные кадры:
+    они попадают в frames, но не в xy.
     """
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
@@ -167,15 +192,32 @@ def unigaze_gaze_from_video(
     try:
         import torch
 
-        raw_fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
-        stride, fps = _sample_stride(raw_fps, target_fps)
+        container_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        fps_from_timestamps = not 0 < container_fps <= _MAX_CONTAINER_FPS
+        all_frames = _infer_all_frames()
+        # Шаг заранее известен, только если частоте контейнера можно верить.
+        decode_stride = 1
+        if not (all_frames or fps_from_timestamps):
+            decode_stride = _sample_stride(container_fps, target_fps)[0]
         started = time.perf_counter()
-        frames = _kept_frames(capture, stride)
+        frames, indices, timestamps_ms = _decoded_frames(capture, decode_stride)
         seconds["decode"] = time.perf_counter() - started
+
+        source_fps = _fps_from_timestamps(timestamps_ms) if fps_from_timestamps else container_fps
+        stride, fps = _sample_stride(source_fps, target_fps, round_fps=not fps_from_timestamps)
+        if not all_frames and decode_stride != stride:
+            frames = [frame for frame, index in zip(frames, indices) if _kept(index, stride)]
+            indices = [index for index in indices if _kept(index, stride)]
+
         faces, seconds["detector"], seconds["mesh"] = _detect_faces(frames, batch_size)
         started = time.perf_counter()
-        for frame, face in zip(frames, faces):
+        rows = 0
+        for frame, face, index in zip(frames, faces, indices):
             trace, image = _prepare_frame(face, frame)
+            trace.index = index
+            if _kept(index, stride):
+                trace.row = rows
+                rows += 1
             traces.append(trace)
             if image is not None:
                 images.append(image)
@@ -197,33 +239,47 @@ def unigaze_gaze_from_video(
     finally:
         capture.release()
 
-    xy, ear = _trajectory_arrays(traces)
+    xy, ear = _trajectory_arrays([trace for trace in traces if trace.row is not None])
     return GazeTrajectory(
         xy=xy,
         ear=ear,
         fps=fps,
         seconds=seconds,
-        source_fps=raw_fps,
+        source_fps=source_fps,
         stride=stride,
+        fps_from_timestamps=fps_from_timestamps,
+        timestamps_ms=timestamps_ms,
         frames=tuple(traces),
     )
 
 
-def _kept_frames(capture, stride: int) -> list[np.ndarray]:
+def _decoded_frames(capture, stride: int) -> tuple[list[np.ndarray], list[int], np.ndarray]:
+    """Каждый stride-й кадр, номера этих кадров и метки времени всех кадров в мс."""
     frames = []
-    source_index = 0
-    while True:
-        keep = source_index % stride == 0
-        if keep:
-            ok, frame = capture.read()
-        else:
-            ok = capture.grab()
-        if not ok:
-            break
-        source_index += 1
-        if keep:
+    indices = []
+    timestamps = []
+    while capture.grab():
+        index = len(timestamps)
+        if _kept(index, stride):
+            ok, frame = capture.retrieve()
+            if not ok:
+                break
             frames.append(frame)
-    return frames
+            indices.append(index)
+        timestamps.append(float(capture.get(cv2.CAP_PROP_POS_MSEC)))
+    return frames, indices, np.asarray(timestamps, dtype=np.float64)
+
+
+def _kept(index: int, stride: int) -> bool:
+    return index % stride == 0
+
+
+def _fps_from_timestamps(timestamps_ms: np.ndarray) -> float:
+    """Средняя частота по первой и последней метке. 0, если считать не по чему."""
+    if len(timestamps_ms) < 2:
+        return 0.0
+    span = float(timestamps_ms[-1] - timestamps_ms[0])
+    return (len(timestamps_ms) - 1) * 1000.0 / span if span > 0 else 0.0
 
 
 def _detect_faces(frames: list[np.ndarray], batch_size: int):
@@ -325,6 +381,10 @@ def _predict(model, images, batch_size: int, device, torch) -> np.ndarray:
 
 def _use_fp16() -> bool:
     return os.getenv("UNIGAZE_FP16", "1") != "0"
+
+
+def _infer_all_frames() -> bool:
+    return os.getenv("UNIGAZE_ALL_FRAMES", "1") != "0"
 
 
 def _mediapipe_model() -> Path:
