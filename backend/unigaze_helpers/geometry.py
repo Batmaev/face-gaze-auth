@@ -50,7 +50,11 @@ def dummy_camera(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def crop_face(image: np.ndarray, landmarks: np.ndarray, scale: float = 2.0):
-    """Кроп вокруг всех данных точек, как в predict_gaze_video.py."""
+    """Кроп вокруг всех данных точек, как в predict_gaze_video.py.
+
+    Возвращает кроп, точки в его координатах и сам кроп в пикселях кадра:
+    x0, y0, x1, y1.
+    """
     x_min = int(landmarks[:, 0].min())
     x_max = int(landmarks[:, 0].max())
     y_min = int(landmarks[:, 1].min())
@@ -67,7 +71,7 @@ def crop_face(image: np.ndarray, landmarks: np.ndarray, scale: float = 2.0):
         return None
     crop = image[y0:y1, x0:x1]
     shifted = landmarks - np.array([x0, y0], dtype=np.float64)
-    return crop, shifted
+    return crop, shifted, (x0, y0, x1, y1)
 
 
 def estimate_head_pose(landmarks: np.ndarray, camera: np.ndarray, distortion: np.ndarray):

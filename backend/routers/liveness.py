@@ -17,7 +17,7 @@ import stimulus
 from models import Stimulus, StimulusResponse, LivenessResponse
 from utils import DATA_DIR, USER_ID_MAX_LENGTH, USER_ID_PATTERN
 from trajectory_comparison.decide import LivenessDecision, compare_trajectories
-from unigaze_helpers.trajectory import FrameTrace, GazeTrajectory, unigaze_gaze_from_video
+from unigaze_helpers.trajectory import LANDMARK_IDS, FrameTrace, GazeTrajectory, unigaze_gaze_from_video
 from log_decorator import format_json_compact_arrays, log_handler, stage
 
 
@@ -67,6 +67,11 @@ def _matrix(value: np.ndarray | None) -> list[list[float]] | None:
     return matrix.tolist()
 
 
+def _points(value: np.ndarray | None) -> list[float] | None:
+    flat = _vec(value)
+    return None if flat is None else [round(item, 2) for item in flat]
+
+
 def _frame_record(trace: FrameTrace, gaze: GazeTrajectory, compared_frames: int) -> dict:
     """Кадр без пустых полей: пропуск легче читать, чем пачку null."""
     record: dict = {
@@ -85,6 +90,8 @@ def _frame_record(trace: FrameTrace, gaze: GazeTrajectory, compared_frames: int)
         "detector_score": _num(trace.detector_score),
         "presence": _num(trace.presence),
         "bbox": _vec(trace.bbox),
+        "landmarks_xy_flat": _points(trace.landmarks),
+        "crop": list(trace.crop) if trace.crop else None,
         "rotation": _matrix(trace.rotation),
         "origin": _vec(trace.origin),
         "rvec": _vec(trace.rvec),
@@ -105,8 +112,14 @@ def _processing_record(gaze: GazeTrajectory, compared_frames: int) -> dict:
         # Метки времени всех кадров ролика, в том числе не прогнанных через сети.
         # Индекс — index кадра в frames.
         "timestamps_ms": [round(float(value), 3) for value in gaze.timestamps_ms],
+        "frame_size": list(gaze.frame_size) if gaze.frame_size else None,
+        # Номера точек сетки MediaPipe в том порядке, в каком они лежат в landmarks_xy_flat кадра.
+        "landmark_ids": list(LANDMARK_IDS),
         # unigaze_pitchyaw и head_pitch/head_yaw — радианы. xy — плоскость камеры до min-max.
         # bbox — пиксели кадра, xmin ymin xmax ymax. rotation — 3×3 в СК камеры кропа.
+        # landmarks_xy_flat — x0 y0 x1 y1 … в пикселях кадра, reshape(-1, 2) даёт точки
+        # в порядке landmark_ids. Плоский, чтобы кадр занимал одну строку.
+        # crop — x0 y0 x1 y1 кропа, по нему строится фиктивная камера позы.
         "frames": [_frame_record(trace, gaze, compared_frames) for trace in gaze.frames],
     }
 

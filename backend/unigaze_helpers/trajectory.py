@@ -41,6 +41,15 @@ from geometry import (
 _MP_POINTS = (33, 133, 362, 263, 98, 327)
 _MP_LEFT_EAR = (362, 385, 387, 263, 373, 380)
 _MP_RIGHT_EAR = (133, 158, 160, 33, 144, 153)
+# Точки сетки, которые попадают в json попытки. Видео оттуда не достать, а по
+# этим точкам и кропу пересчитываются EAR, поза и всё после UniGaze.
+# Сверх точек позы и EAR: центры радужек 468 и 473, кончик носа 1, лоб 10,
+# подбородок 152, края лица 234 и 454, уголки рта 61 и 291, губы 13 и 14.
+LANDMARK_IDS = tuple(
+    sorted(
+        {*_MP_POINTS, *_MP_LEFT_EAR, *_MP_RIGHT_EAR, 468, 473, 1, 10, 152, 234, 454, 61, 291, 13, 14}
+    )
+)
 
 _MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -77,6 +86,8 @@ class FrameTrace:
     unigaze_pitchyaw — выход UniGaze в радианах, взгляд в СК нормализованного лица.
     detector_score, presence — уверенности детектора и сетки.
     bbox — xmin, ymin, xmax, ymax детектора в пикселях кадра.
+    landmarks — точки LANDMARK_IDS в пикселях кадра, массив N×2.
+    crop — кроп для позы и UniGaze, x0, y0, x1, y1 в пикселях кадра.
     rotation — матрица 3×3, которой взгляд возвращается в СК камеры кропа.
     origin — центр лица в СК камеры кропа.
     rvec, tvec — поза головы solvePnP.
@@ -94,6 +105,8 @@ class FrameTrace:
     detector_score: float | None = None
     presence: float | None = None
     bbox: tuple[float, float, float, float] | None = None
+    landmarks: np.ndarray | None = None
+    crop: tuple[int, int, int, int] | None = None
     rotation: np.ndarray | None = None
     origin: np.ndarray | None = None
     rvec: np.ndarray | None = None
@@ -116,6 +129,7 @@ class GazeTrajectory:
     fps_from_timestamps: в контейнере не было правдоподобной частоты,
     source_fps посчитан по меткам времени кадров.
     timestamps_ms: метки времени всех кадров ролика, в мс.
+    frame_size: ширина и высота кадра в пикселях, None если кадров не было.
     frames: прогнанные через сети кадры с промежуточными величинами. Все кадры
     ролика, если UNIGAZE_ALL_FRAMES не 0, иначе только оставленные. Оставленные
     — те, у кого row не None. Оставленные
@@ -133,6 +147,7 @@ class GazeTrajectory:
     stride: int = 1
     fps_from_timestamps: bool = False
     timestamps_ms: np.ndarray = field(default_factory=lambda: np.empty(0))
+    frame_size: tuple[int, int] | None = None
     frames: tuple[FrameTrace, ...] = ()
 
 
@@ -202,6 +217,7 @@ def unigaze_gaze_from_video(
         started = time.perf_counter()
         frames, indices, timestamps_ms = _decoded_frames(capture, decode_stride)
         seconds["decode"] = time.perf_counter() - started
+        frame_size = (int(frames[0].shape[1]), int(frames[0].shape[0])) if frames else None
 
         source_fps = _fps_from_timestamps(timestamps_ms) if fps_from_timestamps else container_fps
         stride, fps = _sample_stride(source_fps, target_fps, round_fps=not fps_from_timestamps)
@@ -249,6 +265,7 @@ def unigaze_gaze_from_video(
         stride=stride,
         fps_from_timestamps=fps_from_timestamps,
         timestamps_ms=timestamps_ms,
+        frame_size=frame_size,
         frames=tuple(traces),
     )
 
@@ -328,13 +345,14 @@ def _prepare_frame(face, frame: np.ndarray) -> tuple[FrameTrace, np.ndarray | No
             trace.status = "mesh"
         return trace, None
 
+    trace.landmarks = face.points[list(LANDMARK_IDS)]
     trace.ear_left, trace.ear_right = eye_aspect_ratios(face.points, _MP_LEFT_EAR, _MP_RIGHT_EAR)
     trace.ear = min(trace.ear_left, trace.ear_right)
     cropped = crop_face(frame, face.points)
     if cropped is None:
         trace.status = "crop"
         return trace, None
-    crop, shifted = cropped
+    crop, shifted, trace.crop = cropped
     points = shifted[list(_MP_POINTS)]
     camera, distortion = dummy_camera(crop)
     pose = estimate_head_pose(points, camera, distortion)
