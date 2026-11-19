@@ -113,6 +113,16 @@ export default function App() {
           stimulus_duration_ms: run.finishedAt - run.startedAt,
           stimulus_rendered_frames: run.renderedFrames,
           stimulus_fps: stimulus.stim.fps,
+          // Время — начало кадра отрисовки, на экране кадр появляется позже.
+          stimulus_frames: {
+            time_ms: run.frames.map((f) => relativeMs(f.time, recording)),
+            index: run.frames.map((f) => f.index),
+          },
+          // Включает кадры до события start записи и после stop.
+          camera_frames: recording.cameraFrames && {
+            capture_ms: recording.cameraFrames.map((f) => (f.captureTime === null ? null : relativeMs(f.captureTime, recording))),
+            presentation_ms: recording.cameraFrames.map((f) => relativeMs(f.presentationTime, recording)),
+          },
           // Все размеры в CSS-пикселях; физические = CSS × device_pixel_ratio.
           stimulus_area: run.area,
           viewport: run.viewport,
@@ -225,6 +235,10 @@ export default function App() {
         </div>
       );
   }
+}
+
+function relativeMs(time: number, recording: Recording) {
+  return Math.round((time - recording.startedAt) * 100) / 100;
 }
 
 function errorText(error: unknown) {

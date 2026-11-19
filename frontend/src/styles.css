@@ -289,6 +289,16 @@ button:disabled {
   font-size: 14px;
 }
 
+.frame-watcher {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .spinner {
   width: 44px;
   height: 44px;

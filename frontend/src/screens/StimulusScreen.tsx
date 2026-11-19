@@ -13,6 +13,7 @@ export interface StimulusRun {
   startedAt: number;
   finishedAt: number;
   renderedFrames: number;
+  frames: { time: number; index: number }[];
   /** Область, в которую отображён квадрат [0, 1]×[0, 1] стимула, в CSS-пикселях от левого верхнего угла окна. */
   area: Rect;
   viewport: { width: number; height: number };
@@ -89,6 +90,7 @@ export default function StimulusScreen({ stimulus, stream, onFinished, onError }
       // Отсчёт стимула идёт от фактического старта записи, чтобы видео и траектория совпадали по времени.
       const startedAt = performance.now();
       let renderedFrames = 0;
+      const frames: StimulusRun["frames"] = [];
       setPhase("running");
 
       const tick = async (now: number) => {
@@ -96,16 +98,20 @@ export default function StimulusScreen({ stimulus, stream, onFinished, onError }
         const elapsed = now - startedAt;
         if (elapsed >= durationMs) {
           moveMarker(points.length - 1);
+          frames.push({ time: now, index: points.length - 1 });
           const finishedAt = performance.now();
           try {
             const recording = await recorder!.stop();
-            if (!cancelled) callbacks.current.onFinished(recording, { startedAt, finishedAt, renderedFrames, ...layout });
+            if (!cancelled) callbacks.current.onFinished(recording, { startedAt, finishedAt, renderedFrames, frames, ...layout });
           } catch (error) {
             if (!cancelled) callbacks.current.onError(`Ошибка записи: ${error instanceof Error ? error.message : String(error)}`);
           }
           return;
         }
-        moveMarker(Math.min(points.length - 1, Math.floor((elapsed / 1000) * fps)));
+        // Метка rAF — начало кадра, она может оказаться раньше startedAt, и elapsed станет отрицательным.
+        const index = Math.min(points.length - 1, Math.max(0, Math.floor((elapsed / 1000) * fps)));
+        moveMarker(index);
+        frames.push({ time: now, index });
         renderedFrames++;
         frame = requestAnimationFrame(tick);
       };
