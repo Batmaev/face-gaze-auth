@@ -32,6 +32,8 @@ export interface LivenessResult {
   inlier: boolean[];
   /** Частота gaze_x / gaze_y / inlier после прореживания видео на сервере. */
   fps: number;
+  /** Время обработки на сервере, от входа в хендлер до ответа. */
+  processing_ms: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

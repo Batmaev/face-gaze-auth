@@ -96,7 +96,6 @@ export default function App() {
 
   const finishTest = async (stimulus: StimulusResponse, recording: Recording, run: StimulusRun) => {
     const startedAt = performance.now();
-    let uploadedAt: number | null = null;
     setScreen({ name: "processing", stage: "uploading", progress: 0 });
     const track = stream?.getVideoTracks()[0];
     try {
@@ -144,19 +143,16 @@ export default function App() {
           user_agent: navigator.userAgent,
         },
         onUploadProgress: (progress) => setScreen({ name: "processing", stage: "uploading", progress }),
-        onUploaded: () => {
-          uploadedAt = performance.now();
-          setScreen({ name: "processing", stage: "checking", progress: 1 });
-        },
+        onUploaded: () => setScreen({ name: "processing", stage: "checking", progress: 1 }),
       });
-      const finishedAt = performance.now();
-      const uploadEndedAt = uploadedAt ?? finishedAt;
+      const totalMs = performance.now() - startedAt;
+      const processingMs = result.processing_ms;
       setScreen({
         name: "result",
         stimulus,
         result,
-        uploadMs: uploadEndedAt - startedAt,
-        processingMs: finishedAt - uploadEndedAt,
+        uploadMs: Math.max(0, totalMs - processingMs),
+        processingMs,
       });
     } catch (error) {
       setScreen({ name: "error", message: `Проверка не удалась: ${errorText(error)}` });

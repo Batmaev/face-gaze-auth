@@ -68,3 +68,8 @@ class LivenessResponse(BaseModel):
         description="Frame is within 0.15 of the stimulus on both axes after min-max. Blinks are false",
     )
     fps: float = Field(..., description="Frame rate of gaze_x, gaze_y and inlier", example=15)
+    processing_ms: int = Field(
+        ...,
+        description="Server processing time in milliseconds, from the start of the handler until the response",
+        example=840,
+    )

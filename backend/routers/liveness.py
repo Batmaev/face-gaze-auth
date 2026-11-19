@@ -192,7 +192,7 @@ def _mark(timings: dict[str, float], name: str, seconds: float) -> None:
     stage(name, seconds)
 
 
-def _liveness_response(decision: LivenessDecision, fps: float) -> LivenessResponse:
+def _liveness_response(decision: LivenessDecision, fps: float, processing_ms: int) -> LivenessResponse:
     return LivenessResponse(
         is_live=decision.is_live,
         score=decision.score,
@@ -200,6 +200,7 @@ def _liveness_response(decision: LivenessDecision, fps: float) -> LivenessRespon
         gaze_y=_floats(decision.gaze_y),
         inlier=decision.inlier.tolist(),
         fps=fps,
+        processing_ms=processing_ms,
     )
 
 
@@ -254,6 +255,7 @@ async def islive_video(
     if not isinstance(metadata_obj, dict):
         raise HTTPException(status_code=400, detail="metadata must be a JSON object")
 
+    processing_started = time.perf_counter()
     shown_x, shown_y = stimulus.frames(parsed_stim)
     attempt_id, videopath, json_path = _allocate_attempt(DATA_DIR / user_id / "attempts", _video_ext(file.filename))
     record = {
@@ -301,7 +303,8 @@ async def islive_video(
         record["processing"] = _processing_record(gaze, n)
         record["decision"] = _decision_record(decision, stim_x, stim_y)
         await _write_record(json_path, record)
-        return _liveness_response(decision, gaze.fps)
+        processing_ms = round((time.perf_counter() - processing_started) * 1000)
+        return _liveness_response(decision, gaze.fps, processing_ms)
 
     except HTTPException as exc:
         record["error"] = _error_text(exc)
